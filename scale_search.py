@@ -6,9 +6,10 @@ Uses Tenney height (log2(n*d) for ratio n/d) as consonance metric.
 
 import random
 import math
+import bisect
 from fractions import Fraction
 from dataclasses import dataclass
-from typing import List, Set, Tuple
+from typing import List, Set, Tuple, Optional
 import argparse
 
 
@@ -31,7 +32,6 @@ class SearchConfig:
         elite_count: 2
         initial_temp: 0.1
         final_temp: 0.001
-        diversity_weight: 0.1
         octave_range: 1 (evaluate across 3 octaves)
     """
     max_notes: int = 7          # Maximum notes in scale (including octave)
@@ -48,8 +48,8 @@ class SearchConfig:
     # Simulated annealing parameters
     initial_temp: float = 0.1   # Starting temperature (higher = more exploration)
     final_temp: float = 0.001   # Ending temperature
-    # Diversity parameters
-    diversity_weight: float = 0.1  # How much to reward diversity (0 = off)
+    # Deprecated - no longer used (diversity maintained via randomized elite selection)
+    diversity_weight: float = 0.1
     # Multi-octave evaluation
     octave_range: int = 1       # Octaves above/below to consider (0=single, 1=3 total, 2=5 total)
     # EDO approximation (for neji scales)
@@ -292,28 +292,26 @@ def get_primes_used(scale: List[Fraction]) -> Set[int]:
 def prime_diversity_score(scale: List[Fraction]) -> float:
     """
     Measures harmonic color diversity based on prime factors used.
-    Higher = more diverse prime palette.
     
-    Uses cube root formula: sum of (p - 2)^(1/3) for each odd prime p > 5.
-    This gives diminishing returns for higher primes while still rewarding them.
+    Returns sum of 1/p for each distinct prime p > 5.
     
-    Primes 3 and 5 are considered baseline (the "5-limit" foundation).
+    This naturally weights lower primes more heavily:
+    - Having 7 contributes 1/7 ≈ 0.143
+    - Having 11 contributes 1/11 ≈ 0.091  
+    - Having 13 contributes 1/13 ≈ 0.077
+    - Having 17 contributes 1/17 ≈ 0.059
+    - Having 19 contributes 1/19 ≈ 0.053
     
-    Example scores for different prime limits:
-    - 5-limit only (primes 3,5): 0.0
-    - 7-limit: 1.71  (adds 7)
-    - 11-limit: 3.79 (adds 7, 11)
-    - 13-limit: 6.01 (adds 7, 11, 13)
-    - 17-limit: 8.48 (adds 7, 11, 13, 17)
+    Example scores:
+    - 5-limit only: 0.0
+    - 7-limit: 0.143
+    - 7 + 11 limit: 0.234
+    - 7 + 11 + 13 limit: 0.311
+    - 7 + 11 + 13 + 17 + 19: 0.423
     """
     primes = get_primes_used(scale)
     
-    score = 0.0
-    for p in primes:
-        if p > 5:  # Only count primes beyond the 5-limit baseline
-            score += (p - 2) ** (1/3)
-    
-    return score
+    return sum(1.0 / p for p in primes if p > 5)
 
 
 def edo_penalty(scale: List[Fraction], edo: int = 12) -> float:
@@ -398,7 +396,7 @@ CONSONANCE_METRICS = {
 # Note: 'edo' is handled specially - use 'edo12', 'edo19', etc. to specify which EDO
 SCALE_METRICS = {
     'steps': (step_size_penalty, "Step size penalty (penalizes clustered notes)"),
-    'primes': (prime_diversity_score, "Prime diversity bonus (rewards 7, 11, 13-limit)"),
+    'primes': (prime_diversity_score, "Prime diversity (penalizes lack of 7/11/13-limit)"),
     # 'edoN' handled specially in parse_metrics - generates neji scales
 }
 
@@ -412,7 +410,7 @@ METRIC_NORMALIZATION = {
     'wilson': (0.0, 12.0),      # simple to complex
     'soft_tenney': (1.0, 3.5),  # sqrt of tenney range
     'steps': (0.0, 0.5),        # 0 = no close steps, 0.5 = very clustered
-    'primes': (0.0, 10.0),      # 0 = 5-limit only, ~8.5 = 17-limit, ~10 = 19-limit
+    'primes': (0.0, 0.5),       # sum(1/p): 0=5-limit, 0.31=13-limit, 0.42=19-limit
     'edo': (0.0, 1.0),          # 0 = on EDO steps, 1 = at midpoints
 }
 
@@ -489,15 +487,24 @@ def combined_metric(ratio: Fraction, metrics: List[Tuple[str, float]], normalize
     return total / total_weight if total_weight > 0 else 0.0
 
 
-def generate_candidate_ratios(limit: int) -> List[Fraction]:
-    """Generate all ratios n/d where 1 < n/d < 2 and n,d <= limit, in lowest terms."""
+def generate_candidate_ratios(limit: int) -> Tuple[List[Fraction], List[float]]:
+    """
+    Generate all ratios n/d where 1 < n/d < 2 and n,d <= limit, in lowest terms.
+    Returns (ratios, weights) where weights are Zipf-biased toward simpler ratios.
+    Weight = 1 / (n * d) gives strong preference to low-complexity ratios.
+    """
     ratios = set()
     for d in range(1, limit + 1):
         for n in range(d + 1, 2 * d):  # ratios between 1 and 2
             if n <= limit:
                 g = gcd(n, d)
                 ratios.add(Fraction(n // g, d // g))
-    return sorted(ratios)
+    
+    sorted_ratios = sorted(ratios)
+    # Zipf-like weights: 1/(n*d) strongly favors simpler ratios
+    weights = [1.0 / (r.numerator * r.denominator) for r in sorted_ratios]
+    
+    return sorted_ratios, weights
 
 
 def interval_between(r1: Fraction, r2: Fraction) -> Fraction:
@@ -541,14 +548,25 @@ def evaluate_scale(scale: List[Fraction],
                    scale_metrics: List[Tuple[str, float]] = None,
                    edo: int = 0) -> Tuple[float, dict]:
     """
-    Evaluate a scale's consonance using the specified metric(s).
-    Returns (fitness, details) where higher fitness = more consonant.
+    Evaluate a scale's quality using the specified metric(s).
+    Returns (fitness, details) where higher fitness = better scale.
     
     metrics: List of (metric_name, weight) tuples for interval evaluation
     scale_metrics: List of (metric_name, weight) tuples for whole-scale properties
     octave_range: How many octaves above/below to consider
     interval_cache: Optional precomputed {(n,d): score} lookup for fast evaluation
     edo: If > 0, penalize notes far from this EDO's steps (for neji scales)
+    
+    All metrics are converted to quality scores (0-1, higher = better):
+    - Interval metrics (tenney, etc.): quality = 1 - normalized_dissonance
+    - primes: quality = normalized_diversity (already positive)
+    - steps: quality = 1 - normalized_clustering
+    - edo: quality = 1 - normalized_deviation
+    
+    Combination uses weighted geometric mean:
+    - All metrics must be good for a high score
+    - Can't compensate a bad metric with a good one
+    - Weights act as exponents: quality_i ^ weight_i
     """
     if metrics is None:
         metrics = [('tenney', 1.0)]
@@ -599,13 +617,24 @@ def evaluate_scale(scale: List[Fraction],
             
             key = (int_n, int_d)
             
-            # Use cache if available, otherwise compute
-            if interval_cache is not None and key in interval_cache:
-                score = interval_cache[key]
-                interval_scores.append(score)
-                for name, _ in metrics:
-                    if (key, name) in interval_cache:
-                        individual_scores[name].append(interval_cache[(key, name)])
+            # Use cache if available, otherwise compute and cache
+            if interval_cache is not None:
+                if key in interval_cache:
+                    score = interval_cache[key]
+                    interval_scores.append(score)
+                    for name, _ in metrics:
+                        if (key, name) in interval_cache:
+                            individual_scores[name].append(interval_cache[(key, name)])
+                else:
+                    # Compute and cache
+                    interval = Fraction(int_n, int_d)
+                    score = combined_metric(interval, metrics, normalize=True)
+                    interval_cache[key] = score
+                    interval_scores.append(score)
+                    for name, _ in metrics:
+                        val = cached_metric(interval, name)
+                        interval_cache[(key, name)] = val
+                        individual_scores[name].append(val)
             else:
                 interval = Fraction(int_n, int_d)
                 score = combined_metric(interval, metrics, normalize=True)
@@ -613,26 +642,31 @@ def evaluate_scale(scale: List[Fraction],
                 for name, _ in metrics:
                     individual_scores[name].append(cached_metric(interval, name))
     
-    # Base score from intervals (lower = better)
-    raw_interval_score = sum(interval_scores) / len(interval_scores) if interval_scores else 0
+    # Base score from intervals (this is a penalty: 0-1, lower = better)
+    raw_interval_penalty = sum(interval_scores) / len(interval_scores) if interval_scores else 0
     
     # Normalize for note count: more notes naturally have higher average scores
-    # Factor exp(1 - 1/n) where n = number of notes (ratios + 1, counting tonic)
-    # Traditional counting: "7-note scale" = 1/1 + 6 ratios (2/1 is octave repeat)
     num_notes = len(scale) + 1  # +1 for 1/1 (2/1 is octave, not separately counted)
     note_count_factor = math.exp(1 - 1/num_notes) if num_notes > 1 else 1.0
-    avg_interval_score = raw_interval_score / note_count_factor
+    interval_penalty = raw_interval_penalty / note_count_factor
     
-    # Apply scale-level metrics
+    # Convert to quality (higher = better)
+    interval_quality = 1.0 - interval_penalty
+    interval_quality = max(0.001, interval_quality)  # Avoid zero for geometric mean
+    
+    # Collect all quality scores for geometric mean combination
+    # Each entry: (quality, weight) where quality is 0-1 and higher = better
+    quality_scores = []
     scale_metric_scores = {}
     scale_metric_scores['num_notes'] = num_notes
     scale_metric_scores['note_count_factor'] = note_count_factor
-    total_weight = sum(w for _, w in metrics)  # Weight from interval metrics
-    combined_score = avg_interval_score * total_weight
+    
+    # Interval quality as first component
+    interval_weight = sum(w for _, w in metrics)
+    quality_scores.append((interval_quality, interval_weight))
     
     for metric_name, weight in scale_metrics:
         if metric_name == 'edo':
-            # Handle EDO metric specially
             raw_score = edo_penalty(scale, edo)
             scale_metric_scores['edo'] = raw_score
             scale_metric_scores['edo_deviation'] = edo_deviation(scale, edo)
@@ -641,22 +675,35 @@ def evaluate_scale(scale: List[Fraction],
             raw_score = metric_fn(scale)
             scale_metric_scores[metric_name] = raw_score
         
-        # Normalize
+        # Normalize to 0-1
         min_val, max_val = METRIC_NORMALIZATION[metric_name]
         norm_score = (raw_score - min_val) / (max_val - min_val)
         norm_score = max(0.0, min(1.0, norm_score))
         
-        # 'primes' is a bonus (higher = better), everything else is a penalty
+        # Convert to quality (higher = better)
+        # 'primes' is already positive (more diversity = better)
+        # 'steps' and 'edo' are penalties (lower = better), so invert
         if metric_name == 'primes':
-            combined_score -= weight * norm_score  # Subtract because we want to reward this
+            quality = norm_score  # Already: higher diversity = higher quality
         else:
-            combined_score += weight * norm_score
+            quality = 1.0 - norm_score  # Invert penalties
         
-        total_weight += weight
+        quality = max(0.001, quality)  # Avoid zero for geometric mean
+        quality_scores.append((quality, weight))
     
-    # Normalize combined score
-    final_score = combined_score / total_weight if total_weight > 0 else avg_interval_score
-    fitness = -final_score  # Higher fitness = better
+    # Combine using weighted geometric mean
+    # Formula: product(q_i ^ w_i) ^ (1 / sum(w_i))
+    # Equivalently: exp(sum(w_i * log(q_i)) / sum(w_i))
+    total_weight = sum(w for _, w in quality_scores)
+    
+    if total_weight > 0:
+        log_sum = sum(w * math.log(q) for q, w in quality_scores)
+        final_quality = math.exp(log_sum / total_weight)
+    else:
+        final_quality = interval_quality
+    
+    # Fitness = quality (higher = better, range roughly 0-1)
+    fitness = final_quality
     
     metric_avgs = {name: sum(scores) / len(scores) if scores else 0 
                    for name, scores in individual_scores.items()}
@@ -664,9 +711,11 @@ def evaluate_scale(scale: List[Fraction],
     
     details = {
         'intervals': [],
-        'avg_score': final_score,
-        'interval_score': avg_interval_score,  # Normalized for note count
-        'raw_interval_score': raw_interval_score,  # Before normalization
+        'avg_score': 1.0 - final_quality,  # For backward compat: lower = better
+        'quality': final_quality,  # New: higher = better
+        'interval_quality': interval_quality,
+        'interval_penalty': interval_penalty,
+        'raw_interval_penalty': raw_interval_penalty,
         'min_score': min(interval_scores) if interval_scores else 0,
         'max_score': max(interval_scores) if interval_scores else 0,
         'metrics': metrics,
@@ -680,9 +729,42 @@ def evaluate_scale(scale: List[Fraction],
     return fitness, details
 
 
-def create_random_scale(candidates: List[Fraction], num_ratios: int) -> List[Fraction]:
-    """Create a random scale with the given number of ratios (notes - 1)."""
-    return random.sample(candidates, min(num_ratios, len(candidates)))
+def create_random_scale(candidates: List[Fraction], num_ratios: int, 
+                        weights: List[float] = None) -> List[Fraction]:
+    """
+    Create a random scale with the given number of ratios.
+    If weights provided, uses weighted sampling (biased toward simpler ratios).
+    """
+    if weights is not None and len(weights) == len(candidates):
+        # Weighted sampling without replacement
+        selected = []
+        available = list(range(len(candidates)))
+        available_weights = list(weights)
+        
+        for _ in range(min(num_ratios, len(candidates))):
+            if not available:
+                break
+            # Normalize weights
+            total = sum(available_weights)
+            if total <= 0:
+                idx_in_available = random.randrange(len(available))
+            else:
+                r = random.random() * total
+                cumsum = 0
+                idx_in_available = 0
+                for i, w in enumerate(available_weights):
+                    cumsum += w
+                    if r <= cumsum:
+                        idx_in_available = i
+                        break
+            
+            selected.append(candidates[available[idx_in_available]])
+            available.pop(idx_in_available)
+            available_weights.pop(idx_in_available)
+        
+        return selected
+    else:
+        return random.sample(candidates, min(num_ratios, len(candidates)))
 
 
 def load_seed_scales(filepath: str) -> List[List[Fraction]]:
@@ -919,26 +1001,6 @@ def mutate_stack(scale: List[Fraction], limit: int) -> Fraction:
     return None
 
 
-def mutate_neighbor(note: Fraction, limit: int) -> Fraction:
-    """Find a nearby ratio (within ~50 cents)."""
-    note_cents = 1200 * math.log2(float(note))
-    candidates = []
-    
-    # Search for nearby ratios
-    for d in range(1, min(limit + 1, 32)):  # Limit search for speed
-        for n in range(d, 2 * d):
-            if gcd(n, d) == 1 and n <= limit:
-                ratio = Fraction(n, d)
-                ratio_cents = 1200 * math.log2(float(ratio))
-                diff = abs(ratio_cents - note_cents)
-                if 10 < diff < 60:  # Between 10 and 60 cents away
-                    candidates.append(ratio)
-    
-    if candidates:
-        return random.choice(candidates)
-    return None
-
-
 def mutate_mediant(note1: Fraction, note2: Fraction, limit: int) -> Fraction:
     """
     Create mediant of two ratios: (a+c)/(b+d) for a/b and c/d.
@@ -961,8 +1023,7 @@ def mutate(scale: List[Fraction], candidates: List[Fraction], config: SearchConf
     3. Combine two notes from the scale (like La Monte Young's 1323/1024)
     4. Stack intervals La Monte Young style (7/4 × 7/4 × 3/2 × 3/2...)
     5. Mediant - create ratio "between" two scale notes
-    6. Move to a neighboring ratio
-    7. Random replacement from candidates (fallback)
+    6. Random replacement from candidates (fallback)
     """
     scale = scale.copy()
     scale_set = set(scale)
@@ -1015,12 +1076,6 @@ def mutate(scale: List[Fraction], candidates: List[Fraction], config: SearchConf
         others = [n for n in scale if n != note1]
         note2 = random.choice(others) if others else note1
         if try_add_note(mutate_mediant(note1, note2, limit), idx):
-            return scale
-    
-    if r < 0.86 and scale:
-        # Move to neighboring ratio
-        idx = random.randrange(len(scale))
-        if try_add_note(mutate_neighbor(scale[idx], limit), idx):
             return scale
     
     # Fallback: random replacement from candidates
@@ -1204,22 +1259,16 @@ def crossover(parent1: List[Fraction], parent2: List[Fraction], config: SearchCo
         return crossover_interval_preserving(parent1, parent2, config)
 
 
-def scale_similarity(scale1: List[Fraction], scale2: List[Fraction]) -> float:
-    """Jaccard similarity between two scales (0 = completely different, 1 = identical)."""
-    set1 = set(scale1)
-    set2 = set(scale2)
-    if not set1 and not set2:
-        return 1.0
-    intersection = len(set1 & set2)
-    union = len(set1 | set2)
-    return intersection / union if union > 0 else 0.0
-
-
 def local_search(scale: List[Fraction], candidates: List[Fraction], 
-                 eval_fn, config: SearchConfig, max_iterations: int = 10) -> Tuple[List[Fraction], float]:
+                 eval_fn, config: SearchConfig, max_iterations: int = 10,
+                 candidate_cents: List[Tuple[float, int]] = None) -> Tuple[List[Fraction], float]:
     """
     Hill-climbing local search: try small improvements to a scale.
     Returns improved scale and its fitness.
+    
+    Args:
+        candidate_cents: Optional pre-computed list of (cents, index) sorted by cents
+                        for O(log n) neighbor lookups instead of O(n)
     
     Tries:
     1. Swapping each note with nearby candidates
@@ -1237,10 +1286,18 @@ def local_search(scale: List[Fraction], candidates: List[Fraction],
             note = current[i]
             note_cents = 1200 * math.log2(float(note))
             
-            # Find candidates within 100 cents
-            nearby = [c for c in candidates 
-                     if c not in scale_set 
-                     and abs(1200 * math.log2(float(c)) - note_cents) < 100]
+            # Find candidates within 100 cents using binary search if available
+            if candidate_cents is not None:
+                # Binary search for range [note_cents - 100, note_cents + 100]
+                lo = bisect.bisect_left(candidate_cents, (note_cents - 100, -1))
+                hi = bisect.bisect_right(candidate_cents, (note_cents + 100, float('inf')))
+                nearby = [candidates[idx] for cents, idx in candidate_cents[lo:hi]
+                         if candidates[idx] not in scale_set]
+            else:
+                # Fallback to linear scan
+                nearby = [c for c in candidates 
+                         if c not in scale_set 
+                         and abs(1200 * math.log2(float(c)) - note_cents) < 100]
             
             for replacement in nearby[:5]:  # Try up to 5 nearby notes
                 test_scale = current.copy()
@@ -1271,27 +1328,6 @@ def local_search(scale: List[Fraction], candidates: List[Fraction],
     return current, current_fitness
 
 
-def diversity_bonus(scale: List[Fraction], population: List[Tuple[float, List[Fraction]]], 
-                    sample_size: int = 20) -> float:
-    """
-    Compute diversity bonus for a scale based on its dissimilarity to the population.
-    Samples a subset of population for efficiency.
-    Returns value between 0 (very similar to population) and 1 (very different).
-    """
-    if not population:
-        return 1.0
-    
-    # Sample for efficiency
-    if len(population) > sample_size:
-        sample = random.sample(population, sample_size)
-    else:
-        sample = population
-    
-    # Average dissimilarity
-    total_dissim = sum(1.0 - scale_similarity(scale, ind[1]) for ind in sample)
-    return total_dissim / len(sample)
-
-
 def tournament_select(population: List[Tuple[float, List[Fraction]]], k: int) -> List[Fraction]:
     """Select an individual via tournament selection."""
     tournament = random.sample(population, k)
@@ -1299,12 +1335,16 @@ def tournament_select(population: List[Tuple[float, List[Fraction]]], k: int) ->
     return winner[1]
 
 
-def select_diverse_elites(population: List[Tuple[float, List[Fraction]]], 
-                          n_elites: int) -> List[Tuple[float, List[Fraction]]]:
+def select_elites(population: List[Tuple[float, List[Fraction]]], 
+                  n_elites: int) -> List[Tuple[float, List[Fraction]]]:
     """
-    Select elite individuals while maintaining diversity.
-    Takes the best individual, then greedily adds individuals that are
-    both fit and different from already selected elites.
+    Select elite individuals with increasing randomness.
+    
+    First elite is always the best (greedy). Subsequent elites are sampled
+    from an increasingly large window of top candidates, introducing more
+    randomness for lower-ranked selections while avoiding duplicates.
+    
+    This provides natural diversity without expensive similarity calculations.
     """
     if n_elites <= 0 or not population:
         return []
@@ -1312,33 +1352,39 @@ def select_diverse_elites(population: List[Tuple[float, List[Fraction]]],
     # Sort by fitness
     sorted_pop = sorted(population, key=lambda x: x[0], reverse=True)
     
-    # Always take the best
-    elites = [sorted_pop[0]]
+    elites = []
+    seen_scales = set()
     
-    # Greedily add diverse elites
-    for _ in range(n_elites - 1):
-        best_score = -float('inf')
-        best_candidate = None
+    for k in range(n_elites):
+        # Window size grows: 1, 3, 6, 10, 15... (triangular numbers give smooth growth)
+        # Or simpler: 1, 4, 8, 12, 16... (1 + 4*k)
+        window_size = min(1 + 4 * k, len(sorted_pop))
         
-        for ind in sorted_pop:
-            if any(scale_similarity(ind[1], e[1]) > 0.8 for e in elites):
-                continue  # Skip if too similar to existing elite
-            
-            # Score combines fitness and diversity from elites
-            min_dissim = min(1.0 - scale_similarity(ind[1], e[1]) for e in elites)
-            score = ind[0] + 0.5 * min_dissim  # Balance fitness and diversity
-            
-            if score > best_score:
-                best_score = score
-                best_candidate = ind
+        # Find candidates in window that aren't duplicates
+        candidates = []
+        for ind in sorted_pop[:window_size]:
+            scale_key = frozenset((r.numerator, r.denominator) for r in ind[1])
+            if scale_key not in seen_scales:
+                candidates.append(ind)
         
-        if best_candidate:
-            elites.append(best_candidate)
-        elif len(sorted_pop) > len(elites):
-            # Fallback: just take next best
-            for ind in sorted_pop:
-                if ind not in elites:
+        if candidates:
+            if k == 0:
+                # First one is always the best
+                chosen = candidates[0]
+            else:
+                # Random from available candidates in window
+                chosen = random.choice(candidates)
+            
+            elites.append(chosen)
+            scale_key = frozenset((r.numerator, r.denominator) for r in chosen[1])
+            seen_scales.add(scale_key)
+        else:
+            # All in window are duplicates, try rest of population
+            for ind in sorted_pop[window_size:]:
+                scale_key = frozenset((r.numerator, r.denominator) for r in ind[1])
+                if scale_key not in seen_scales:
                     elites.append(ind)
+                    seen_scales.add(scale_key)
                     break
     
     return elites
@@ -1355,11 +1401,16 @@ def evolve(config: SearchConfig, verbose: bool = True,
         seed_scales: Optional list of seed scales to initialize population.
                     If None, uses default seeds. If empty list [], uses no seeds.
     """
-    candidates = generate_candidate_ratios(config.ratio_limit)
+    candidates, candidate_weights = generate_candidate_ratios(config.ratio_limit)
     metrics = config.metrics
     scale_metrics = config.scale_metrics
     octave_range = config.octave_range
     edo = config.edo
+    
+    # Pre-compute cents for all candidates (for fast neighbor lookups)
+    # Store as list of (cents, index) sorted by cents
+    candidate_cents = [(1200 * math.log2(float(c)), i) for i, c in enumerate(candidates)]
+    candidate_cents.sort()  # Sort by cents value
     
     # Build metric description string
     if len(metrics) == 1:
@@ -1385,54 +1436,11 @@ def evolve(config: SearchConfig, verbose: bool = True,
         print(f"Searching for scales with {note_desc} notes")
         print(f"Evaluating across {octave_desc}")
         print(f"Using metric: {metric_desc}")
+        print()
     
-    # Precompute all possible intervals and their scores
-    if verbose:
-        print("Precomputing interval scores...", end=" ", flush=True)
-    
-    all_ratios = [(1, 1)] + [(r.numerator, r.denominator) for r in candidates] + [(2, 1)]
-    extended_ratios = set()
-    for octave_shift in range(-octave_range, octave_range + 1):
-        mult_n = 2 ** max(0, octave_shift)
-        mult_d = 2 ** max(0, -octave_shift)
-        for n, d in all_ratios:
-            new_n, new_d = n * mult_n, d * mult_d
-            g = gcd(new_n, new_d)
-            extended_ratios.add((new_n // g, new_d // g))
-    
-    # Build interval cache
+    # Lazy interval cache - compute on demand instead of precomputing all pairs
+    # This avoids O(n²) precomputation which becomes prohibitive for large ratio limits
     interval_cache = {}
-    computed_intervals = set()
-    
-    for n1, d1 in extended_ratios:
-        for n2, d2 in extended_ratios:
-            if (n1 * d2) >= (n2 * d1):
-                continue
-            int_n = n2 * d1
-            int_d = d2 * n1
-            g = gcd(int_n, int_d)
-            int_n, int_d = int_n // g, int_d // g
-            while int_n >= 2 * int_d:
-                int_d *= 2
-                g = gcd(int_n, int_d)
-                int_n, int_d = int_n // g, int_d // g
-            while int_n < int_d:
-                int_n *= 2
-                g = gcd(int_n, int_d)
-                int_n, int_d = int_n // g, int_d // g
-            
-            key = (int_n, int_d)
-            if key in computed_intervals:
-                continue
-            computed_intervals.add(key)
-            
-            interval = Fraction(int_n, int_d)
-            interval_cache[key] = combined_metric(interval, metrics, normalize=True)
-            for metric_name, _ in metrics:
-                interval_cache[(key, metric_name)] = cached_metric(interval, metric_name)
-    
-    if verbose:
-        print(f"done ({len(computed_intervals)} intervals)\n")
     
     # Scale fitness cache: frozenset of (n,d) tuples -> fitness
     scale_cache = {}
@@ -1469,13 +1477,13 @@ def evolve(config: SearchConfig, verbose: bool = True,
                 fitness = eval_scale_cached(seed)
                 population.append((fitness, seed.copy()))
     
-    # Fill rest with random scales
+    # Fill rest with random scales (biased toward simpler ratios)
     while len(population) < config.population_size:
         if config.fixed_notes:
             num_ratios = config.fixed_notes - 1
         else:
             num_ratios = random.randint(config.min_notes - 1, config.max_notes - 1)
-        scale = create_random_scale(candidates, num_ratios)
+        scale = create_random_scale(candidates, num_ratios, candidate_weights)
         fitness = eval_scale_cached(scale)
         population.append((fitness, scale))
     
@@ -1499,27 +1507,29 @@ def evolve(config: SearchConfig, verbose: bool = True,
             stagnation_counter += 1
         
         # Early stopping if converged
-        if stagnation_counter > 50:
+        if stagnation_counter > 20:
             if verbose:
-                # Print score (not fitness) for clarity: score = -fitness
-                best_score = -best_ever[0]
-                print(f"Gen {gen:4d}: converged (no improvement for 50 gens), best score = {best_score:.4f}")
+                best_quality = best_ever[0]
+                num_intervals = sum(1 for k in interval_cache if isinstance(k, tuple) and len(k) == 2 and isinstance(k[0], int))
+                print(f"Gen {gen:4d}: converged (no improvement for 20 gens), best quality = {best_quality:.4f}, intervals = {num_intervals}")
             break
         
-        # Adaptive mutation rate
+        # Adaptive mutation rate (increase when stagnating)
         adaptive_mutation = config.mutation_rate
-        if stagnation_counter > 20:
-            adaptive_mutation = min(0.8, config.mutation_rate * (1 + stagnation_counter / 50))
+        if stagnation_counter > 10:
+            adaptive_mutation = min(0.8, config.mutation_rate * (1 + stagnation_counter / 20))
         
-        if verbose and gen % 50 == 0:
-            # Print score (not fitness) and show both current and best_ever
-            current_score = -population[0][0]
-            best_score = -best_ever[0]
+        if verbose and gen % 10 == 0:
+            # Print quality (higher = better)
+            current_quality = population[0][0]
+            best_quality = best_ever[0]
             unique = len(set(frozenset((r.numerator, r.denominator) for r in ind[1]) for ind in population[:50]))
-            if abs(current_score - best_score) < 0.0001:
-                print(f"Gen {gen:4d}: score = {current_score:.4f}, temp = {temperature:.4f}, unique = {unique}/50, cache = {len(scale_cache)}")
+            # Count unique intervals cached (keys that are tuples of 2 ints, not (tuple, string))
+            num_intervals = sum(1 for k in interval_cache if isinstance(k, tuple) and len(k) == 2 and isinstance(k[0], int))
+            if abs(current_quality - best_quality) < 0.0001:
+                print(f"Gen {gen:4d}: quality = {current_quality:.4f}, temp = {temperature:.4f}, unique = {unique}/50, scales = {len(scale_cache)}, intervals = {num_intervals}")
             else:
-                print(f"Gen {gen:4d}: score = {current_score:.4f} (best = {best_score:.4f}), temp = {temperature:.4f}, unique = {unique}/50, cache = {len(scale_cache)}")
+                print(f"Gen {gen:4d}: quality = {current_quality:.4f} (best = {best_quality:.4f}), temp = {temperature:.4f}, unique = {unique}/50, scales = {len(scale_cache)}, intervals = {num_intervals}")
         
         # Create new population
         new_population = []
@@ -1527,8 +1537,8 @@ def evolve(config: SearchConfig, verbose: bool = True,
         # Always preserve best_ever (critical: don't lose the best solution found)
         new_population.append(best_ever)
         
-        # Diverse elitism from current population
-        elites = select_diverse_elites(population, config.elite_count + 3)
+        # Elite selection with increasing randomness (avoids expensive similarity calculations)
+        elites = select_elites(population, config.elite_count + 3)
         for elite in elites[:config.elite_count + 1]:  # One less since we added best_ever
             if elite[1] != best_ever[1]:  # Don't duplicate best_ever
                 new_population.append(elite)
@@ -1548,16 +1558,9 @@ def evolve(config: SearchConfig, verbose: bool = True,
             
             fitness = eval_scale_cached(child)
             
-            # Diversity bonus
-            if config.diversity_weight > 0:
-                div_bonus = diversity_bonus(child, new_population)
-                adjusted_fitness = fitness + config.diversity_weight * div_bonus
-            else:
-                adjusted_fitness = fitness
-            
             # Simulated annealing acceptance
-            if new_population and adjusted_fitness < new_population[-1][0]:
-                delta = new_population[-1][0] - adjusted_fitness
+            if new_population and fitness < new_population[-1][0]:
+                delta = new_population[-1][0] - fitness
                 accept_prob = math.exp(-delta / temperature) if temperature > 0 else 0
                 if random.random() > accept_prob:
                     if random.random() < 0.3:
@@ -1565,7 +1568,7 @@ def evolve(config: SearchConfig, verbose: bool = True,
                             num_ratios = config.fixed_notes - 1
                         else:
                             num_ratios = random.randint(config.min_notes - 1, config.max_notes - 1)
-                        child = create_random_scale(candidates, num_ratios)
+                        child = create_random_scale(candidates, num_ratios, candidate_weights)
                         fitness = eval_scale_cached(child)
             
             new_population.append((fitness, child))
@@ -1575,7 +1578,8 @@ def evolve(config: SearchConfig, verbose: bool = True,
             new_population.sort(key=lambda x: x[0], reverse=True)
             for i in range(min(3, len(new_population))):
                 improved_scale, improved_fitness = local_search(
-                    new_population[i][1], candidates, eval_scale_cached, config, max_iterations=5)
+                    new_population[i][1], candidates, eval_scale_cached, config, 
+                    max_iterations=5, candidate_cents=candidate_cents)
                 if improved_fitness > new_population[i][0]:
                     new_population[i] = (improved_fitness, improved_scale)
                     if improved_fitness > best_ever[0]:
@@ -1589,7 +1593,8 @@ def evolve(config: SearchConfig, verbose: bool = True,
     if verbose:
         print("Polishing best solution with local search...")
     best_scale, best_fitness = local_search(
-        best_ever[1], candidates, eval_scale_cached, config, max_iterations=20)
+        best_ever[1], candidates, eval_scale_cached, config, 
+        max_iterations=20, candidate_cents=candidate_cents)
     if best_fitness > best_ever[0]:
         best_ever = (best_fitness, best_scale)
     
@@ -1679,7 +1684,7 @@ def evaluate_named_scale(name: str, ratios: List[str], metrics: List[Tuple[str, 
     print(f"Metric: {metric_desc}")
     print(f"Octaves evaluated: {2 * octave_range + 1}")
     print(f"Total intervals: {details['num_intervals']}")
-    print(f"Combined score (normalized): {details['avg_score']:.4f}")
+    print(f"Quality (0-1, higher=better): {details['quality']:.4f}")
     
     # Show EDO deviation if applicable
     if edo > 0 and 'edo_deviation' in details['metric_averages']:
@@ -1734,7 +1739,6 @@ Defaults:
   --ratio-limit: 32 (allows up to 31-limit intervals)
   --generations: 500
   --population: 200
-  --diversity: 0.1
   --temp: 0.1
   --octaves: 1 (evaluate across 3 octaves)
   --seeds: none (unbiased random initialization)
@@ -1760,7 +1764,7 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
     parser.add_argument("--metric", type=str, default='tenney', 
                         help="Metric(s) to use. Single: 'tenney'. Combined: 'tenney:1,roughness:0.5'")
     parser.add_argument("--diversity", type=float, default=0.1, 
-                        help="Diversity weight (default: 0.1, 0=off)")
+                        help="(deprecated, ignored)")
     parser.add_argument("--temp", type=float, default=0.1, 
                         help="Initial SA temperature (default: 0.1, higher=more exploration)")
     parser.add_argument("--octaves", type=int, default=1, 
@@ -1887,7 +1891,7 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
     print()
     print(f"Metric: {metric_desc}")
     print(f"Intervals evaluated: {details['num_intervals']} (across {octave_desc})")
-    print(f"Combined score (normalized): {details['avg_score']:.4f}")
+    print(f"Quality (0-1, higher=better): {details['quality']:.4f}")
     
     # Show individual metric scores
     if len(metrics) > 1:

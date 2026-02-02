@@ -904,15 +904,18 @@ def mutate(scale: List[Fraction], candidates: List[Fraction], config: SearchConf
     return scale
 
 
-def crossover(parent1: List[Fraction], parent2: List[Fraction], config: SearchConfig) -> List[Fraction]:
-    """Combine two scales."""
+def crossover_uniform(parent1: List[Fraction], parent2: List[Fraction], config: SearchConfig) -> List[Fraction]:
+    """
+    Uniform crossover: combine both parents and randomly sample.
+    Simple but doesn't preserve structure.
+    """
     combined = list(set(parent1) | set(parent2))
     
     # Convert note count to ratio count: N notes = N-1 ratios
     if config.fixed_notes:
         num_ratios = config.fixed_notes - 1
         if len(combined) < num_ratios:
-            return parent1.copy()  # Can't make valid child
+            return parent1.copy()
         return random.sample(combined, num_ratios)
     
     max_ratios = config.max_notes - 1
@@ -921,9 +924,156 @@ def crossover(parent1: List[Fraction], parent2: List[Fraction], config: SearchCo
     if len(combined) <= max_ratios:
         return combined
     
-    # Take a random subset
     num_ratios = random.randint(min_ratios, max_ratios)
     return random.sample(combined, min(num_ratios, len(combined)))
+
+
+def crossover_blend(parent1: List[Fraction], parent2: List[Fraction], config: SearchConfig) -> List[Fraction]:
+    """
+    Blend crossover: alternate taking notes from each parent (sorted by pitch).
+    Preserves some structural properties from both parents.
+    """
+    p1_sorted = sorted(parent1, key=lambda r: float(r))
+    p2_sorted = sorted(parent2, key=lambda r: float(r))
+    
+    # Interleave from both parents
+    child = []
+    i, j = 0, 0
+    use_p1 = random.random() < 0.5
+    
+    target_len = len(parent1) if config.fixed_notes else random.randint(
+        config.min_notes - 1, config.max_notes - 1)
+    
+    seen = set()
+    while len(child) < target_len and (i < len(p1_sorted) or j < len(p2_sorted)):
+        if use_p1 and i < len(p1_sorted):
+            note = p1_sorted[i]
+            i += 1
+        elif j < len(p2_sorted):
+            note = p2_sorted[j]
+            j += 1
+        elif i < len(p1_sorted):
+            note = p1_sorted[i]
+            i += 1
+        else:
+            break
+        
+        if note not in seen:
+            child.append(note)
+            seen.add(note)
+        use_p1 = not use_p1
+    
+    return child if child else parent1.copy()
+
+
+def crossover_pivot(parent1: List[Fraction], parent2: List[Fraction], config: SearchConfig) -> List[Fraction]:
+    """
+    Pivot crossover: choose a pivot pitch, take lower notes from one parent
+    and higher notes from the other.
+    """
+    p1_sorted = sorted(parent1, key=lambda r: float(r))
+    p2_sorted = sorted(parent2, key=lambda r: float(r))
+    
+    # Choose pivot point (in cents)
+    pivot = random.uniform(200, 1000)  # Somewhere in the middle of the octave
+    
+    # Take notes below pivot from parent1, above from parent2 (or vice versa)
+    if random.random() < 0.5:
+        p1_sorted, p2_sorted = p2_sorted, p1_sorted
+    
+    child = []
+    seen = set()
+    
+    for note in p1_sorted:
+        cents = 1200 * math.log2(float(note))
+        if cents < pivot and note not in seen:
+            child.append(note)
+            seen.add(note)
+    
+    for note in p2_sorted:
+        cents = 1200 * math.log2(float(note))
+        if cents >= pivot and note not in seen:
+            child.append(note)
+            seen.add(note)
+    
+    # Adjust to target length
+    target_len = (config.fixed_notes - 1) if config.fixed_notes else random.randint(
+        config.min_notes - 1, config.max_notes - 1)
+    
+    if len(child) > target_len:
+        child = random.sample(child, target_len)
+    elif len(child) < target_len:
+        # Fill from combined parents
+        all_notes = list(set(parent1) | set(parent2))
+        available = [n for n in all_notes if n not in seen]
+        while len(child) < target_len and available:
+            note = random.choice(available)
+            child.append(note)
+            available.remove(note)
+    
+    return child if child else parent1.copy()
+
+
+def crossover_interval_preserving(parent1: List[Fraction], parent2: List[Fraction], 
+                                   config: SearchConfig) -> List[Fraction]:
+    """
+    Interval-preserving crossover: try to preserve good interval relationships
+    from both parents by keeping contiguous pitch regions.
+    """
+    p1_sorted = sorted(parent1, key=lambda r: float(r))
+    p2_sorted = sorted(parent2, key=lambda r: float(r))
+    
+    # Choose how many contiguous notes to take from each parent
+    if len(p1_sorted) >= 2 and len(p2_sorted) >= 2:
+        # Take a contiguous region from parent1
+        start1 = random.randint(0, len(p1_sorted) - 1)
+        end1 = random.randint(start1, len(p1_sorted))
+        region1 = p1_sorted[start1:end1]
+        
+        # Take complementary region from parent2 (notes not overlapping in pitch)
+        if region1:
+            min_cents = 1200 * math.log2(float(min(region1)))
+            max_cents = 1200 * math.log2(float(max(region1)))
+            region2 = [n for n in p2_sorted 
+                      if 1200 * math.log2(float(n)) < min_cents - 50 
+                      or 1200 * math.log2(float(n)) > max_cents + 50]
+        else:
+            region2 = p2_sorted
+        
+        child = list(set(region1) | set(region2))
+    else:
+        child = list(set(parent1) | set(parent2))
+    
+    # Adjust to target length
+    target_len = (config.fixed_notes - 1) if config.fixed_notes else random.randint(
+        config.min_notes - 1, config.max_notes - 1)
+    
+    if len(child) > target_len:
+        child = random.sample(child, target_len)
+    elif len(child) < target_len:
+        all_notes = list(set(parent1) | set(parent2))
+        available = [n for n in all_notes if n not in child]
+        while len(child) < target_len and available:
+            note = random.choice(available)
+            child.append(note)
+            available.remove(note)
+    
+    return child if child else parent1.copy()
+
+
+def crossover(parent1: List[Fraction], parent2: List[Fraction], config: SearchConfig) -> List[Fraction]:
+    """
+    Combine two scales using a randomly chosen crossover operator.
+    """
+    r = random.random()
+    if r < 0.3:
+        return crossover_uniform(parent1, parent2, config)
+    elif r < 0.5:
+        return crossover_blend(parent1, parent2, config)
+    elif r < 0.7:
+        return crossover_pivot(parent1, parent2, config)
+    else:
+        return crossover_interval_preserving(parent1, parent2, config)
 
 
 def scale_similarity(scale1: List[Fraction], scale2: List[Fraction]) -> float:
@@ -935,6 +1085,62 @@ def scale_similarity(scale1: List[Fraction], scale2: List[Fraction]) -> float:
     intersection = len(set1 & set2)
     union = len(set1 | set2)
     return intersection / union if union > 0 else 0.0
+
+
+def local_search(scale: List[Fraction], candidates: List[Fraction], 
+                 eval_fn, config: SearchConfig, max_iterations: int = 10) -> Tuple[List[Fraction], float]:
+    """
+    Hill-climbing local search: try small improvements to a scale.
+    Returns improved scale and its fitness.
+    
+    Tries:
+    1. Swapping each note with nearby candidates
+    2. Single-note mutations
+    """
+    current = scale.copy()
+    current_fitness = eval_fn(current)
+    scale_set = set(current)
+    
+    for _ in range(max_iterations):
+        improved = False
+        
+        # Try swapping each note with a similar one
+        for i in range(len(current)):
+            note = current[i]
+            note_cents = 1200 * math.log2(float(note))
+            
+            # Find candidates within 100 cents
+            nearby = [c for c in candidates 
+                     if c not in scale_set 
+                     and abs(1200 * math.log2(float(c)) - note_cents) < 100]
+            
+            for replacement in nearby[:5]:  # Try up to 5 nearby notes
+                test_scale = current.copy()
+                test_scale[i] = replacement
+                test_fitness = eval_fn(test_scale)
+                
+                if test_fitness > current_fitness:
+                    current = test_scale
+                    current_fitness = test_fitness
+                    scale_set = set(current)
+                    improved = True
+                    break
+            
+            if improved:
+                break
+        
+        if not improved:
+            # Try a single mutation
+            mutated = mutate(current, candidates, config)
+            mutated_fitness = eval_fn(mutated)
+            if mutated_fitness > current_fitness:
+                current = mutated
+                current_fitness = mutated_fitness
+                scale_set = set(current)
+            else:
+                break  # No improvement found
+    
+    return current, current_fitness
 
 
 def diversity_bonus(scale: List[Fraction], population: List[Tuple[float, List[Fraction]]], 
@@ -1101,10 +1307,47 @@ def evolve(config: SearchConfig, verbose: bool = True) -> Tuple[List[Fraction], 
             scale_cache[key] = fitness
         return scale_cache[key]
     
+    # Seed scales - good starting points for evolution
+    seed_scales = [
+        # Major scale (Ptolemaic)
+        [Fraction(9,8), Fraction(5,4), Fraction(4,3), Fraction(3,2), Fraction(5,3), Fraction(15,8)],
+        # Natural minor
+        [Fraction(9,8), Fraction(6,5), Fraction(4,3), Fraction(3,2), Fraction(8,5), Fraction(9,5)],
+        # Septimal scale
+        [Fraction(8,7), Fraction(6,5), Fraction(4,3), Fraction(3,2), Fraction(8,5), Fraction(7,4)],
+        # 11-limit scale
+        [Fraction(12,11), Fraction(6,5), Fraction(4,3), Fraction(11,8), Fraction(3,2), Fraction(11,6)],
+        # Harmonic series fragment
+        [Fraction(9,8), Fraction(5,4), Fraction(11,8), Fraction(3,2), Fraction(13,8), Fraction(7,4)],
+        # Pentatonic
+        [Fraction(9,8), Fraction(5,4), Fraction(3,2), Fraction(5,3)],
+        # Blues-ish
+        [Fraction(7,6), Fraction(5,4), Fraction(4,3), Fraction(7,5), Fraction(3,2), Fraction(7,4)],
+    ]
+    
     # Initialize population
     # Note: N notes = N-1 ratios (tonic 1/1 is implicit, octave 2/1 is repeat)
     population = []
-    for _ in range(config.population_size):
+    
+    # Add seed scales (filtered to appropriate size)
+    for seed in seed_scales:
+        if config.fixed_notes:
+            target_len = config.fixed_notes - 1
+            if len(seed) == target_len:
+                fitness = eval_scale_cached(seed)
+                population.append((fitness, seed.copy()))
+            elif len(seed) > target_len:
+                # Randomly sample to target length
+                trimmed = random.sample(seed, target_len)
+                fitness = eval_scale_cached(trimmed)
+                population.append((fitness, trimmed))
+        else:
+            if config.min_notes - 1 <= len(seed) <= config.max_notes - 1:
+                fitness = eval_scale_cached(seed)
+                population.append((fitness, seed.copy()))
+    
+    # Fill rest with random scales
+    while len(population) < config.population_size:
         if config.fixed_notes:
             num_ratios = config.fixed_notes - 1
         else:
@@ -1204,8 +1447,28 @@ def evolve(config: SearchConfig, verbose: bool = True) -> Tuple[List[Fraction], 
             
             new_population.append((fitness, child))
         
+        # Periodic local search on top individuals (every 25 generations when stagnating)
+        if stagnation_counter > 10 and gen % 25 == 0:
+            new_population.sort(key=lambda x: x[0], reverse=True)
+            for i in range(min(3, len(new_population))):
+                improved_scale, improved_fitness = local_search(
+                    new_population[i][1], candidates, eval_scale_cached, config, max_iterations=5)
+                if improved_fitness > new_population[i][0]:
+                    new_population[i] = (improved_fitness, improved_scale)
+                    if improved_fitness > best_ever[0]:
+                        best_ever = (improved_fitness, improved_scale)
+                        stagnation_counter = 0
+        
         population = new_population
         temperature *= temp_ratio
+    
+    # Final local search on best solution
+    if verbose:
+        print("Polishing best solution with local search...")
+    best_scale, best_fitness = local_search(
+        best_ever[1], candidates, eval_scale_cached, config, max_iterations=20)
+    if best_fitness > best_ever[0]:
+        best_ever = (best_fitness, best_scale)
     
     # Return best found
     best_fitness, best_scale = best_ever

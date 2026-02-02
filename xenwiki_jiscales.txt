@@ -1,0 +1,1698 @@
+! Scales taken from the xen wiki
+! https://en.xen.wiki/w/Gallery_of_12-tone_just_intonation_scales
+! The wiki is license as CC BY-NC-SA 4.0, but I don't know if scales can be license at all. See: https://en.xen.wiki/w/Xenharmonic_Wiki:License
+
+! rectoo.scl
+Hahn-reduced circle of fifths via ⟨12 19 27 34] commas
+12
+!
+10/9
+8/7
+6/5
+5/4
+4/3
+3/2
+25/16
+8/5
+5/3
+7/4
+9/5
+2/1
+
+! Secor5_23TX.scl
+!
+George Secor's synchronous 5/23-comma temperament extraordinaire
+12
+!
+62/59
+66/59
+70/59
+591/472
+631/472
+331/236
+353/236
+745/472
+395/236
+631/354
+221/118
+2/1
+
+! cv1.scl
+First 12/5 <12 19 28 34| epimorphic
+12
+!
+16/15
+8/7
+7/6
+5/4
+4/3
+7/5
+3/2
+8/5
+5/3
+7/4
+28/15
+2/1
+
+! cv3.scl
+Third 12/5 scale <12 19 28 34| epimorphic = pris
+12
+!
+16/15
+28/25
+7/6
+5/4
+4/3
+7/5
+3/2
+8/5
+5/3
+7/4
+28/15
+2/1
+
+! cv5.scl
+Fifth 12/5 scale <12 19 28 34| epimorphic = inverse hen12
+12
+!
+15/14
+9/8
+6/5
+5/4
+21/16
+7/5
+3/2
+8/5
+12/7
+7/4
+15/8
+2/1
+
+! cv7.scl
+Seventh 12/5 scale <12 19 28 34| epimorphic
+12
+!
+21/20
+9/8
+6/5
+9/7
+21/16
+7/5
+3/2
+8/5
+12/7
+9/5
+15/8
+2/1
+
+! cv9.scl
+Ninth 12/5 scale <12 19 28 34| epimorphic
+12
+!
+15/14
+8/7
+7/6
+5/4
+4/3
+10/7
+32/21
+8/5
+5/3
+25/14
+40/21
+2/1
+
+! cv11.scl
+Eleventh 12/5 scale <12 19 28 34| epimorphic
+12
+!
+15/14
+9/8
+6/5
+9/7
+21/16
+7/5
+3/2
+8/5
+12/7
+9/5
+15/8
+2/1
+
+! cv13.scl
+Thirteenth 12/5 scale <12 19 28 34| epimorphic
+12
+!
+16/15
+28/25
+6/5
+5/4
+4/3
+7/5
+3/2
+8/5
+12/7
+7/4
+28/15
+2/1
+
+! hahn_7.scl
+!
+Paul Hahn's scale with 32 consonant 7-limit dyads. TL '99, see also smithgw_hahn12.scl
+! inverse of duohex; also contains two hexanys
+12
+!
+21/20
+7/6
+6/5
+5/4
+4/3
+7/5
+3/2
+8/5
+5/3
+7/4
+28/15
+2/1
+
+! major_wing.scl
+!
+Chalmers' Major Wing with 7 major and 6 minor triads
+12
+!
+25/24
+9/8
+6/5
+5/4
+4/3
+3/2
+25/16
+8/5
+5/3
+9/5
+15/8
+2/1
+
+! max1.scl
+31 intervals 26 triads 6 tetrads 2 pentads smallest step 49/48 
+12
+!
+8/7
+7/6
+6/5
+5/4
+4/3
+7/5
+3/2
+8/5
+5/3
+12/7
+7/4
+2
+
+! max2.scl
+31 intervals 26 triads 6 tetrads 2 pentads smallest step 49/48 
+12
+!
+8/7
+7/6
+6/5
+5/4
+4/3
+10/7
+3/2
+8/5
+5/3
+12/7
+7/4
+2
+
+! max3.scl
+31 intervals 26 triads 6 tetrads 2 pentads smallest step 50/49
+12
+!
+8/7
+7/6
+6/5
+5/4
+4/3
+7/5
+10/7
+3/2
+8/5
+5/3
+12/7
+2
+
+! max4.scl
+31 intervals 26 triads 6 tetrads 2 pentads smallest step 50/49
+12
+!
+7/6
+6/5
+5/4
+4/3
+7/5
+10/7
+3/2
+8/5
+5/3
+12/7
+7/4
+2
+
+! max5.scl
+31 intervals 26 triads 6 tetrads two pentads smallest step 50/49
+12
+!
+8/7
+7/6
+6/5
+5/4
+4/3
+7/5
+10/7
+3/2
+5/3
+12/7
+7/4
+2
+
+! max6.scl
+31 intervals 26 triads 6 tetrads 2 pentads smallest step 50/49
+12
+!
+8/7
+7/6
+6/5
+4/3
+7/5
+10/7
+3/2
+8/5
+5/3
+12/7
+7/4
+2
+
+! minor_clus.scl
+!
+Chalmers' Minor Mode Cluster, Genus [333335]                                    
+12
+!
+16/15
+9/8
+6/5
+4/3
+27/20
+64/45
+3/2
+8/5
+27/16
+16/9
+9/5
+2/1
+
+! minor_wing.scl
+!
+Chalmers' Minor Wing with 7 minor and 6 major triads                            
+12
+!
+9/8
+6/5
+5/4
+4/3
+36/25
+3/2
+8/5
+5/3
+9/5
+15/8
+48/25
+2
+
+! duodene_skew.scl
+!
+Rotated 6/5x3/2 duodene = magsyn3
+! diminished: -4, 0, 4  meantone: -7 to 4                                                    
+12
+!
+27/25
+10/9
+6/5
+5/4
+4/3
+36/25
+3/2
+8/5
+5/3
+9/5
+48/25
+2/1
+
+! prearchytas12.scl
+!
+Archytas[12] transversal
+12
+!
+16/15
+9/8
+6/5
+5/4
+4/3
+64/45
+3/2
+8/5
+5/3
+16/9
+15/8
+2/1
+
+! mohajira-to-slendro.scl
+!
+From Mohajira to Aeolian and Slendros
+12
+!
+21/20
+9/8
+6/5
+49/40
+4/3
+7/5
+3/2
+8/5
+49/30
+9/5
+11/6
+2/1
+
+! septimal_canright.scl
+!
+Septimal Canright Scale, 7-limit just intonation
+12
+!
+28/27
+9/8
+7/6
+5/4
+4/3
+45/32
+3/2
+14/9
+5/3
+7/4
+15/8
+2/1
+
+! thirteendene.scl
+!
+Detempered 2.3.5.7.13 transversal of marveldene, hecate (225/224, 325/324, 385/384) version
+! Wakalix <<1 4 -2 6 -4 4 -6 6 -10 -16 0 -24 24 -4 -36|| -6 to 5
+! <<2 -4 -4 0 4 -11 -12 -7 -1 2 14 24 14 26 14|| 0 to 10
+! <<3 0 6 6 12 -7 1 -1 8 14 14 28 -4 12 20|| 0 to 9
+! <<1 4 -2 -6 8 4 -6 -13 9 -16 -28 4 -10 30 50|| -4 to 7
+! <<1 4 10 6 -4 4 13 6 -10 12 0 -24 -18 -48 -36|| -8 to 3
+! <<1 -8 -2 -6 8 -15 -6 -13 9 18 14 48 -10 30 50|| 0 to 11
+12
+!
+13/12
+9/8
+6/5
+9/7
+27/20
+13/9
+3/2
+8/5
+27/16
+9/5
+27/14
+2/1
+
+! collapsar.scl
+!
+An 11-limit patent val superwakalix
+12
+!
+15/14
+49/44
+7/6
+5/4
+15/11
+7/5
+3/2
+35/22
+5/3
+7/4
+21/11
+2/1
+! Fokblock([99/98, 56/55, 50/49, 45/44], [2, 2, 3, 8])
+! Fokblock([245/242, 126/121, 50/49, 45/44], [8, 2, 3, 8])
+! Fokblock([36/35, 50/49, 45/44, 56/55], [2, 3, 8, 4])
+! Fokblock([36/35, 50/49, 126/121, 56/55], [2, 3, 8, 0])
+! Fokblock([36/35, 50/49, 126/121, 45/44], [2, 3, 4, 8])
+! Fokblock([36/35, 50/49, 45/44, 99/98], [2, 3, 8, 4])
+! Fokblock([36/35, 50/49, 245/242, 99/98], [2, 3, 8, 8])
+! Fokblock([36/35, 50/49, 245/242, 45/44], [2, 3, 4, 8])
+
+! domdimpajinjschis.scl
+!
+Dominant-diminished-pajara-injera-schism wakalix
+! dominant: -7 to 4; diminished: -4, 0, 4; pajara: -2 to 8; injera: -8 to 2; schism: -1 to 10
+! dominant: sLsLssLsLssL; diminished: sLssLssLssLs; pajara: LLLLsLLLLLsL
+! injera: sLsssssLssss; schism: LsLssLsLsLss
+12
+!
+21/20
+8/7
+6/5
+9/7
+4/3
+7/5
+3/2
+8/5
+12/7
+9/5
+28/15
+2/1
+
+! domdimpajinjmean.scl
+!
+Dominant-diminished-pajara-injera-meantone wakalix
+! dominant: -7 to 4; diminished: -4, 0, 4; pajara: -8 to 2; injera: -2 to 8; meantone: -1 to 10
+! dominant: sLsLssLsLssL; diminished: sLssLssLssLs; pajara: LsLLLLLsLLLL 
+! injera: ssssLsssssLs; meantone: sLsLLsLsLsLL
+! same as miller7, parizek_ji1
+12
+!
+21/20
+10/9
+7/6
+5/4
+4/3
+7/5
+3/2
+14/9
+5/3
+7/4
+28/15
+2/1
+
+! wilson_class.scl
+!
+Wilson's Class Scale, 9 July 1967
+! August-diminished-hexe-augene wakalix
+! august: -3 to 6; diminished: -4 to 4; hexe: -6 and 0; augene: -9 to 0
+! august: LsLLLsLLLsLL; diminished: sLssLssLssLs; hexe: sLsLsLsLsLsL; augene: sssLsssLsssL
+12
+!
+25/24
+28/25
+7/6
+5/4
+4/3
+7/5
+35/24
+8/5
+5/3
+7/4
+28/15
+2/1
+
+! wilson_helix.scl
+!
+Wilson's Helix Song, see David Rosenthal, Helix Song, XH 7&8, 1979. Also Secor, 1964
+12
+!
+13/12
+9/8
+7/6
+5/4
+4/3
+11/8
+3/2
+13/8
+5/3
+7/4
+11/6
+2/1
+
+! 1-3-5-7_by_9/5_Bihexany.scl
+!
+1 3 5 7 by 9/5 2-combination bihexany
+12
+!
+21/20
+9/8
+7/6
+5/4
+21/16
+35/24
+3/2
+63/40
+5/3
+7/4
+9/5
+2/1
+
+! 1-3-5-9_by_7/5_Hexany.scl
+!
+1 3 5 9 by 7/5 2-combination Hexany
+12
+!
+21/20
+9/8
+7/6
+5/4
+21/16
+7/5
+3/2
+63/40
+5/3
+7/4
+15/8
+2/1
+
+! dekany-cs.scl
+!
+Cps({1,3,7,9,11}, 2) union {77/72, 77/64}; Grady-Narushima
+! 2.3.7.11 weakly epimorphic 
+12
+!
+33/32
+77/72
+9/8
+7/6
+77/64
+21/16
+11/8
+3/2
+77/48
+7/4
+11/6
+2/1
+
+! duohex.scl
+Scale with two hexanies
+12
+!
+15/14
+9/8
+6/5
+5/4
+9/7
+10/7
+3/2
+45/28
+12/7
+9/5
+15/8
+2
+
+! duohexmarvwoo.scl
+Marvel woo version of duohex, a scale with two hexanies
+12
+!
+15/14
+9/8
+6/5
+5/4
+9/7
+10/7
+3/2
+45/28
+12/7
+9/5
+15/8
+2
+
+! bihexany.scl
+Hole around [0, 1/2, 1/2, 1/2]
+12
+!
+35/33
+7/6
+5/4
+14/11
+15/11
+3/2
+35/22
+5/3
+7/4
+20/11
+21/11
+2
+
+! hexanys.scl
+!
+Hexanys 1 3 5 7 9                                                               
+12
+!
+35/32
+9/8
+5/4
+21/16
+45/32
+3/2
+105/64
+27/16
+7/4
+15/8
+63/32
+2/1
+
+! hexy.scl
+Maximized 9-limit harmony containing a hexany
+12
+!
+21/20
+9/8
+7/6
+5/4
+4/3
+7/5
+3/2
+8/5
+5/3
+7/4
+28/15
+2
+
+! stelhex.scl
+Partially stellated two out of 1 3 5 7 hexany
+12
+!
+21/20
+7/6
+6/5
+5/4
+21/16
+7/5
+3/2
+8/5
+42/25
+7/4
+9/5
+2
+
+! stelhex2.scl
+!
+Stellated two out of 1 3 5 9 hexany
+12
+!
+135/128
+9/8
+5/4
+81/64
+27/20
+45/32
+3/2
+25/16
+5/3
+27/16
+15/8
+2/1
+
+! stelhex5.scl
+!
+Stellated two out of 1 3 7 9 hexany, stellation is degenerate
+12
+!
+9/8
+7/6
+81/64
+21/16
+189/128
+3/2
+49/32
+27/16
+7/4
+27/14
+63/32
+2/1
+
+! augdommean.scl
+!
+August-dominant-meantone Fokker block ! august: -3 to 6; dominant: -6 to 5; meantone: -1 to 10 ! 28/27 in place of 21/20 in Centaur ! Fokblock([225/224, 81/80, 36/35], [5, 6, 1])
+12
+!
+28/27
+9/8
+7/6
+5/4
+4/3
+7/5
+3/2
+14/9
+5/3
+7/4
+15/8
+2/1
+
+! johnston.scl
+!
+Ben Johnston's combined otonal-utonal scale   
+! August-domineering-pajaric-schism Fokker block
+! august: 0-9; domineering: -2 to 9; pajaric: -4 to 6; schism: -8 to 3                                
+12
+!
+135/128
+9/8
+135/112
+5/4
+11/8
+45/32
+3/2
+135/88
+27/16
+7/4
+15/8
+2/1
+
+! malcolm.scl
+!
+Alexander Malcolm's Monochord (1721)
+! also C major in Yamaha synths, Wilkinson: Tuning In 12, verdi2.scl, inverse of 5-limit jobbit
+12
+!
+16/15
+9/8
+6/5
+5/4
+4/3
+45/32
+3/2
+8/5
+5/3
+16/9
+15/8
+2/1
+
+! malcolm2.scl
+!
+Alexander Malcolm's 1721 scale
+! Transposition of Aaron Krister Johnson scale
+! Inverse of Sylvestro Ganassi's 1543 scale
+12
+!
+17/16
+9/8
+19/16
+5/4
+4/3
+17/12
+3/2
+19/12
+5/3
+85/48
+15/
+
+! ptolex.scl
+12-tone extended septimal Ptolemy, Jon Lyle Smith
+12
+!
+21/20
+9/8
+7/6
+9/7
+4/3
+10/7
+3/2
+63/40
+27/16
+7/4
+27/14
+2/1
+
+! ramis.scl
+!
+Monochord of Ramos de Pareja (Ramis de Pareia), Musica practica (1482)
+! wakalix; also syndia1 and and schisdia6
+! Fokblock([32805/32768, 81/80], [7, 1)) = Fokblock([2048/2025, 81/80], [4, 2]) = 
+! Fokblock([32805/32768, 2048/2025], [2, 1])
+12
+!
+135/128
+10/9
+32/27
+5/4
+4/3
+45/32
+3/2
+128/81
+5/3
+16/9
+15/8
+2/1
+
+! Secor5_23TX.scl
+!
+George Secor's synchronous 5/23-comma temperament extraordinaire
+12
+!
+62/59
+66/59
+70/59
+591/472
+631/472
+331/236
+353/236
+745/472
+395/236
+631/354
+221/118
+2/1
+
+! centaur.scl
+!
+Kraig Grady's 7-limit "Centaur" scale (1987), see Xenharmonikon 16
+ 12
+! august: sLLLLsLLLsLL; dominant: sLsLssLsLsLs; meantone: sLsLLsLsLsLL
+!
+21/20
+9/8
+7/6
+5/4
+4/3
+7/5
+3/2
+14/9
+5/3
+7/4
+15/8
+2/1
+
+! duodene.scl
+!
+Ellis's Duodene
+! Fokblock([81/80, 128/125], [6,5]), genus [33355], Dwarf(⟨12 19 28]), syndie3, Gandhar tuning
+12
+!
+16/15
+9/8
+6/5
+5/4
+4/3
+45/32
+3/2
+8/5
+5/3
+9/5
+15/8
+2/1
+
+! dwarf12_7.scl
+Dwarf(<12 19 28 34|) five major triads, four minor triads two otonal pentads
+! August-dominant-meantone Fokker block
+! august: -3 to 6; dominant: -7 to 4; meantone: -5 to 6
+! Fokblock([225/224, 81/80, 36/35], [4, 6, 5])
+12
+!
+16/15
+9/8
+6/5
+5/4
+4/3
+7/5
+3/2
+8/5
+5/3
+9/5
+28/15
+2
+
+! dwarf12_11.scl
+Dwarf(<12 19 28 34 42|) two otonal hexads
+12
+!
+16/15
+11/10
+6/5
+5/4
+4/3
+7/5
+22/15
+8/5
+5/3
+9/5
+28/15
+2
+
+! hobbit_11_limit.scl
+!
+Chris Vaisvil's 11 limit JI hobbit
+12
+!
+15/14
+10/9
+6/5
+5/4
+4/3
+7/5
+3/2
+8/5
+5/3
+7/4
+11/6
+2/1
+
+! biggulp.scl
+!
+Big Gulp
+! Domineering-lahoh-dominant-meanenneadecal-schism wakalix
+! domineering: -3 to 8; lahoh: 0 to 10; dominant: -6 to 5
+! meanenneadecal: 0 to 11; schism: -8 to 3
+12
+!
+33/32
+9/8
+7/6
+5/4
+21/16
+11/8
+3/2
+99/64
+27/16
+7/4
+15/8
+2/1
+
+! harrison_cinna.scl
+!
+Lou Harrison, "Incidental Music for Corneille's Cinna" (1955-56) 1/1=C
+12
+!
+25/24
+9/8
+6/5
+5/4
+21/16
+45/32
+3/2
+8/5
+5/3
+7/4
+15/8
+2/1
+
+! margo.scl
+!
+Margo Scale
+12
+!
+104/99
+9/8
+13/11
+14/11
+4/3
+63/44
+3/2
+52/33
+56/33
+16/9
+21/11
+2/1
+
+! oljare.scl
+!
+Mats Öljare, scale for "Tampere" (2001)
+12
+!
+35/32
+7/6
+5/4
+4/3
+35/24
+3/2
+14/9
+5/3
+7/4
+15/8
+35/18
+2/1
+
+! prentwind.scl
+!
+Prent Rodgers scale for Dry Hole Canyon for Woodwind Quintet
+12
+!
+14/13
+6/5
+16/13
+5/4
+18/13
+7/5
+3/2
+20/13
+8/5
+7/4
+24/13
+2/1
+
+! riley_rosary.scl
+!
+Terry Riley, tuning for Cactus Rosary (1993)
+12
+!
+49/48
+9/8
+7/6
+5/4
+21/16
+11/8
+3/2
+49/32
+13/8
+7/4
+15/8
+2/1
+
+! sevish.scl
+!
+12
+!
+33/32
+9/8
+7/6
+5/4
+21/16
+11/8
+3/2
+77/48
+5/3 
+27/16
+7/4
+2/1
+
+! simp12.scl
+!
+Stiltner-Vaisvil 12 note 2.3.5.7.13 scale
+12
+!
+9/8
+6/5
+5/4
+4/3
+7/5
+3/2
+8/5
+13/8
+5/3
+7/4
+9/5
+2/1
+
+! young-lm_piano.scl
+!
+LaMonte Young's Well-Tuned Piano
+12
+!
+567/512
+9/8
+147/128
+21/16
+1323/1024
+189/128
+3/2
+49/32
+7/4
+441/256
+63/32
+2/1
+
+! carlos_harm.scl
+!
+Carlos Harmonic & Ben Johnston's scale of 'Blues' from Suite f.micr.piano (1977) & David Beardsley's scale of 'Science Friction'
+12
+!
+17/16
+9/8
+19/16
+5/4
+21/16
+11/8
+3/2
+13/8
+27/16
+7/4
+15/8
+2/1
+
+! genovese_12.scl
+!
+Denny Genovese's superposition of harmonics 8-16 and subharmonics 6-12
+12
+!
+12/11
+9/8
+6/5
+5/4
+4/3
+11/8
+3/2
+13/8
+12/7
+7/4
+15/8
+2/1
+
+! harm24.scl
+!
+Harmonics 12 to 24 
+! Also known as otones12-24                                                             
+12
+!
+13/12
+7/6
+5/4
+4/3
+17/12
+3/2
+19/12
+5/3
+7/4
+11/6
+23/12
+2/1
+
+! bicycle.scl
+!
+13-limit harmonic bicycle, George Secor, 1963
+! Transposition of Wilson's Helix Song, see David Rosenthal, Helix Song, XH 7&8, 1979
+12
+!
+13/12
+9/8
+7/6
+5/4
+4/3
+11/8
+3/2
+13/8
+5/3
+7/4
+11/6
+2/1
+
+! bluesji.scl
+!
+7-limit JI version of Graham Breed's Blues scale
+12
+!
+27/25
+10/9
+5/4
+35/27
+4/3
+35/24
+40/27
+81/50
+5/3
+140/81
+35/18
+2/1
+
+! canton.scl
+A 2.3.11/7.13/7 subgroup scale
+12
+!
+14/13
+9/8
+13/11
+14/11
+4/3
+39/28
+3/2
+11/7
+22/13
+16/9
+13/7
+2/1
+
+! locomotive.scl
+A 2.9.11.13 subgroup scale
+12
+!
+88/81
+9/8
+11/9
+16/13
+11/8
+13/9
+16/11
+13/8
+18/11
+16/9
+81/44
+2/1
+
+! mdevelde.scl
+12 tone Just Intonation scale. By Marcel de Velde, March 6, 2011, Zwolle, NL
+12
+!
+19/18
+9/8
+19/16
+5/4
+4/3
+45/32
+3/2
+19/12
+27/16
+16/9
+15/8
+2/1
+
+! nofives.scl
+!
+Fokblock([64/63, 729/686, 5], [3, 4, 0]), a no-fives 7-limit Fokker block
+12
+!
+28/27
+9/8
+7/6
+9/7
+4/3
+49/36
+3/2
+14/9
+12/7
+7/4
+49/27
+2/1
+
+! omaha.scl
+Omaha 2.3.11 scale
+12
+!
+12/11
+9/8
+32/27
+11/9
+4/3
+11/8
+3/2
+18/11
+27/16
+16/9
+11/6
+2/1
+
+! portsmouth.scl
+Portsmouth, a 2.3.7.11 subgroup scale
+12
+!
+22/21
+8/7
+7/6
+9/7
+4/3
+11/8
+3/2
+11/7
+12/7
+7/4
+11/6
+2/1
+
+! serafini-11.scl
+!
+[[Carlo_Serafini|Carlo Serafini]], scale of "Piano 11"
+12
+!
+11/10
+9/8
+7/6
+5/4
+11/8
+10/7
+3/2
+8/5
+5/3
+7/4
+20/11
+2/1
+
+! steel.scl
+!
+An 11-limit tuning discovered by Lou Harrison and Bill Slye
+12
+!
+28/27
+9/8
+7/6
+5/4
+4/3
+11/8
+3/2
+14/9
+5/3
+7/4
+11/6
+2/1
+
+! unimajor.scl
+A 2.3.11/7 subgroup scale
+12
+!
+22/21
+9/8
+32/27
+14/11
+4/3
+63/44
+3/2
+11/7
+27/16
+16/9
+21/11
+2/1
+
+! 12highschool1.scl
+First 12-note Highschool scale
+12
+! dominant: sLsLssLsLsLs; august: sLLLLsLLLsLL; diminished: ssLsLssLsssL
+! pajara: LLLsLLLLsLLL; meantone: sLLsLsLLssLL; augene: sLssssLsssLs
+!
+21/20 
+9/8 
+6/5 
+5/4 
+4/3 
+7/5 
+3/2 
+8/5 
+5/3 
+7/4 
+15/8 
+2
+
+! 12highschool2.scl
+Second 12-note Highschool scale
+12
+!
+15/14 
+9/8 
+6/5 
+5/4 
+4/3 
+10/7 
+3/2 
+8/5 
+5/3 
+7/4 
+15/8 
+2
+
+! 44_39-12.scl
+!
+12-note chromatic tuning with 352:351, 364:363 (G=1/1, Eb-G#) by Margo Schulter 
+12
+!
+14/13
+44/39
+13/11
+14/11
+4/3
+56/39
+3/2
+11/7
+22/13
+39/22
+21/11
+2/1
+
+! blue-ji.scl
+!
+Blue JI, John O'Sullivan
+12
+!
+15/14
+9/8
+6/5
+5/4
+4/3
+7/5
+3/2
+8/5
+5/3
+9/5
+15/8
+2/1
+ 
+! breedball3.scl
+!
+Third Breed ball around 49/40-7/4
+12
+!
+49/48
+21/20
+15/14
+49/40
+5/4
+7/5
+10/7
+3/2
+49/32
+12/7
+7/4
+2/1
+
+! chalmers_ji1.scl
+!
+Based loosely on Wronski's and similar JI scales, May 2, 1997.
+12
+!
+17/16
+9/8
+19/16
+5/4
+4/3
+17/12
+3/2
+19/12
+5/3
+57/32
+15/8
+2/1
+
+! eagleJI.scl
+!
+Eagle 53 detempering, John O'Sullivan, key of E
+12
+!
+16/15
+9/8
+6/5
+5/4
+4/3
+7/5
+3/2
+8/5
+5/3
+9/5
+15/8
+2/1
+
+! glumma.scl
+Glumma = reca1b2, <12 19 27 34|-epimorphic
+! <<1 -3 -2 -7 -6 4||: -4 to 7; <<4 0 4 -9 -5 9||: -4 to 4; <<6 6 0 -4 -17 -17||: 0 and 6
+! Fokblock([1225/1152, 15/14, 160/147], [4, 6, 4]) weak Fokker block
+12
+!
+36/35
+8/7
+6/5
+5/4
+48/35
+10/7
+3/2
+5/3
+12/7
+7/4
+96/49
+2/1
+
+! hahn12.scl
+Hahn-reduced 12 note scale
+! august: LLsLLsLLLsLL; diminished: sLssLssLsssL; pajara: LLLsLLLLsLLL; hexe: LsLssLLssLLs
+12
+!
+15/14
+8/7
+6/5
+5/4
+4/3
+7/5
+3/2
+8/5
+5/3
+7/4
+15/8
+2
+
+! hahn12.scl
+Hahn-reduced 12 note scale
+! august: LLsLLsLLLsLL; diminished: sLssLssLsssL; pajara: LLLsLLLLsLLL; hexe: LsLssLLssLLs
+12
+!
+15/14
+8/7
+6/5
+5/4
+4/3
+7/5
+3/2
+8/5
+5/3
+7/4
+15/8
+2
+
+! harrisonm_rev.scl
+!
+Michael Harrison, piano tuning for "Revelation" (2001), 1/1=F
+12
+!
+63/64
+9/8
+567/512
+81/64
+21/16
+729/512
+3/2
+189/128
+27/16
+7/4
+243/128
+2/1
+
+! part12.scl
+9+3=12 partition scale <12 19 27| epimorphic
+! nine-note chain plus three-note chain
+12
+!
+10/9
+9/8
+32/27
+81/64
+4/3
+40/27
+3/2
+128/81
+27/16
+16/9
+160/81
+2
+
+! pris.scl
+!
+Optimized (15/14)^3 (16/15)^4 (21/20)^3 (25/24)^2 scale.
+12
+!
+16/15
+28/25
+7/6
+5/4
+4/3
+7/5
+3/2
+8/5
+5/3
+7/4
+28/15
+2/1
+
+! prism.scl
+Prism by Carl Lumma
+! August-pajara-hexe-augene wakalix
+! august: -3 to 6; pajara: -6 to 4; hexe: -6 and 0; augene: -9 to 0
+! august: LsLLLsLLLsLL; pajara: LLsLLLLLsLLL; hexe: sLsLsLsLsLsL; augene: sssLsssLsssL
+12
+!
+16/15
+28/25
+7/6
+5/4
+4/3
+7/5
+112/75
+8/5
+5/3
+7/4
+28/15
+2
+
+! prism.scl
+Prism by Carl Lumma
+! August-pajara-hexe-augene wakalix
+! august: -3 to 6; pajara: -6 to 4; hexe: -6 and 0; augene: -9 to 0
+! august: LsLLLsLLLsLL; pajara: LLsLLLLLsLLL; hexe: sLsLsLsLsLsL; augene: sssLsssLsssL
+12
+!
+16/15
+28/25
+7/6
+5/4
+4/3
+7/5
+112/75
+8/5
+5/3
+7/4
+28/15
+2
+
+! sonbirkezsorted.scl
+!
+Sonbirkez Huzzam scale
+12
+!
+121/108
+847/720
+57/46
+4/3
+3/2
+8/5
+81/50
+64/39
+121/72
+847/480
+171/92
+2/1
+
+! yekta.scl
+!
+Rauf Yekta's 12-tone tuning suggested in 1922 Lavignac Music Encyclopedia
+! mode of romieu.scl, Romieu's Monochord
+12
+!
+16/15
+9/8
+6/5
+5/4
+4/3
+64/45
+3/2
+8/5
+5/3
+9/5
+48/25
+2/1
+
+! zeta12.scl
+!
+Margo Schulter's Zeta Centauri tuning inspired by Kraig Grady's Centaur
+12
+!
+13/12
+9/8
+7/6
+11/9
+4/3
+13/9
+3/2
+14/9
+13/8
+7/4
+11/6
+2/1

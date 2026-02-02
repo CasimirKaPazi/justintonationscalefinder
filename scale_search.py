@@ -685,6 +685,134 @@ def create_random_scale(candidates: List[Fraction], num_ratios: int) -> List[Fra
     return random.sample(candidates, min(num_ratios, len(candidates)))
 
 
+def load_seed_scales(filepath: str) -> List[List[Fraction]]:
+    """
+    Load seed scales from a file. Supports both simple format and Scala .scl format.
+    
+    Comment styles:
+    - Lines starting with # are comments
+    - Lines starting with ! are comments (Scala format)
+    - Blank lines separate scales (in simple format)
+    
+    Ratio formats:
+    - n/d (e.g., 9/8, 5/4, 3/2)
+    - n (e.g., 2 means 2/1)
+    
+    Notes:
+    - 2/1 (or just 2) at the end of a scale is removed (it's implicit)
+    - Ratios outside the octave (like 3/1, 9/4) ARE included for multi-octave scales
+    - Cents values (containing '.') are skipped
+    
+    Example simple format:
+        # My favorite scale
+        9/8
+        5/4
+        4/3
+        3/2
+        5/3
+        15/8
+        2/1
+        
+        # Another scale
+        8/7
+        6/5
+        4/3
+        3/2
+    
+    Example Scala .scl format:
+        ! scale_name.scl
+        Description of the scale
+        12
+        !
+        10/9
+        8/7
+        6/5
+        5/4
+        4/3
+        3/2
+        25/16
+        8/5
+        5/3
+        7/4
+        9/5
+        2
+    
+    Returns a list of scales, where each scale is a list of Fractions.
+    """
+    scales = []
+    current_scale = []
+    
+    try:
+        with open(filepath, 'r') as f:
+            for line in f:
+                line = line.strip()
+                
+                # Skip comments (# or !) and blank lines
+                if line.startswith('#') or line.startswith('!') or not line:
+                    # Blank line or comment - if we have a current scale, save it
+                    if current_scale and not line.startswith('!'):
+                        # Only save on blank lines or # comments, not ! comments
+                        # (Scala format uses ! for inline comments within a scale)
+                        if not line or line.startswith('#'):
+                            # Remove trailing 2/1 if present (it's implicit)
+                            if current_scale[-1] == Fraction(2, 1):
+                                current_scale = current_scale[:-1]
+                            if current_scale:
+                                scales.append(current_scale)
+                            current_scale = []
+                    continue
+                
+                # Skip lines that look like Scala metadata (note count, description)
+                # These are typically just numbers (note count) or text without /
+                # But we need to catch "2" as a ratio, so check if it could be a ratio
+                
+                # Skip cents values (contain decimal point)
+                if '.' in line:
+                    continue
+                
+                # Try to parse as ratio
+                try:
+                    if '/' in line:
+                        # Fraction format: n/d
+                        parts = line.split('/')
+                        if len(parts) == 2:
+                            n = int(parts[0].strip())
+                            d = int(parts[1].strip())
+                            ratio = Fraction(n, d)
+                            if ratio > 1:
+                                current_scale.append(ratio)
+                    else:
+                        # Could be integer like "2" meaning 2/1
+                        # But also could be Scala note count line
+                        # Heuristic: if we already have notes, or it's a small int that makes sense as ratio
+                        val = int(line)
+                        if val >= 2 and (current_scale or val <= 4):
+                            # Likely a ratio like 2, 3, 4 (meaning 2/1, 3/1, 4/1)
+                            ratio = Fraction(val, 1)
+                            current_scale.append(ratio)
+                        # Otherwise skip (likely note count metadata)
+                except (ValueError, ZeroDivisionError):
+                    # Skip malformed lines (likely description text)
+                    pass
+            
+            # Don't forget the last scale
+            if current_scale:
+                # Remove trailing 2/1 if present
+                if current_scale[-1] == Fraction(2, 1):
+                    current_scale = current_scale[:-1]
+                if current_scale:
+                    scales.append(current_scale)
+    
+    except FileNotFoundError:
+        print(f"Warning: Seed file '{filepath}' not found.")
+        return []
+    except Exception as e:
+        print(f"Warning: Error reading seed file '{filepath}': {e}")
+        return []
+    
+    return scales
+
+
 def reduce_to_octave(ratio: Fraction) -> Fraction:
     """Reduce a ratio to within one octave (1 <= r < 2)."""
     while ratio >= 2:
@@ -1216,8 +1344,17 @@ def select_diverse_elites(population: List[Tuple[float, List[Fraction]]],
     return elites
 
 
-def evolve(config: SearchConfig, verbose: bool = True) -> Tuple[List[Fraction], float, dict]:
-    """Run evolutionary search with simulated annealing and diversity preservation."""
+def evolve(config: SearchConfig, verbose: bool = True, 
+           seed_scales: List[List[Fraction]] = None) -> Tuple[List[Fraction], float, dict]:
+    """
+    Run evolutionary search with simulated annealing and diversity preservation.
+    
+    Args:
+        config: SearchConfig with all parameters
+        verbose: Print progress
+        seed_scales: Optional list of seed scales to initialize population.
+                    If None, uses default seeds. If empty list [], uses no seeds.
+    """
     candidates = generate_candidate_ratios(config.ratio_limit)
     metrics = config.metrics
     scale_metrics = config.scale_metrics
@@ -1307,23 +1444,9 @@ def evolve(config: SearchConfig, verbose: bool = True) -> Tuple[List[Fraction], 
             scale_cache[key] = fitness
         return scale_cache[key]
     
-    # Seed scales - good starting points for evolution
-    seed_scales = [
-        # Major scale (Ptolemaic)
-        [Fraction(9,8), Fraction(5,4), Fraction(4,3), Fraction(3,2), Fraction(5,3), Fraction(15,8)],
-        # Natural minor
-        [Fraction(9,8), Fraction(6,5), Fraction(4,3), Fraction(3,2), Fraction(8,5), Fraction(9,5)],
-        # Septimal scale
-        [Fraction(8,7), Fraction(6,5), Fraction(4,3), Fraction(3,2), Fraction(8,5), Fraction(7,4)],
-        # 11-limit scale
-        [Fraction(12,11), Fraction(6,5), Fraction(4,3), Fraction(11,8), Fraction(3,2), Fraction(11,6)],
-        # Harmonic series fragment
-        [Fraction(9,8), Fraction(5,4), Fraction(11,8), Fraction(3,2), Fraction(13,8), Fraction(7,4)],
-        # Pentatonic
-        [Fraction(9,8), Fraction(5,4), Fraction(3,2), Fraction(5,3)],
-        # Blues-ish
-        [Fraction(7,6), Fraction(5,4), Fraction(4,3), Fraction(7,5), Fraction(3,2), Fraction(7,4)],
-    ]
+    # Use provided seeds (empty list means no seeds)
+    if seed_scales is None:
+        seed_scales = []
     
     # Initialize population
     # Note: N notes = N-1 ratios (tonic 1/1 is implicit, octave 2/1 is repeat)
@@ -1587,7 +1710,24 @@ Examples:
   %(prog)s --notes 7 --metric "tenney:1,roughness:0.5"
   %(prog)s --notes 12 --metric "soft_tenney:1,primes:0.5" --ratio-limit 64
   %(prog)s --notes 12 --metric "tenney:1,edo12:2"  # neji scale
+  %(prog)s --seeds my_scales.txt --notes 7  # use seed scales from file
   %(prog)s --compare --metric wilson
+
+Seed file format (supports Scala .scl format):
+  ! comment (Scala style)
+  # comment (also supported)
+  9/8
+  5/4
+  4/3
+  3/2
+  5/3
+  15/8
+  2            <- "2" = 2/1, removed automatically at end
+  
+  # blank lines or # comments separate scales
+  8/7
+  6/5
+  ...
 
 Defaults:
   --notes: 7 (heptatonic scale)
@@ -1597,6 +1737,7 @@ Defaults:
   --diversity: 0.1
   --temp: 0.1
   --octaves: 1 (evaluate across 3 octaves)
+  --seeds: none (unbiased random initialization)
 
 Note counts include the tonic but not the octave repeat.
 A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
@@ -1624,6 +1765,8 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
                         help="Initial SA temperature (default: 0.1, higher=more exploration)")
     parser.add_argument("--octaves", type=int, default=1, 
                         help="Octave range (default: 1 = 3 octaves, 0=single, 2=5 octaves)")
+    parser.add_argument("--seeds", type=str, default=None,
+                        help="File with seed scales to initialize population (default: none)")
     parser.add_argument("--compare", action="store_true", 
                         help="Compare known scales instead of searching")
     parser.add_argument("--list-metrics", action="store_true", 
@@ -1683,6 +1826,13 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
         edo=edo,
     )
     
+    # Load seed scales if specified
+    seed_scales = None
+    if args.seeds:
+        seed_scales = load_seed_scales(args.seeds)
+        if seed_scales:
+            print(f"Loaded {len(seed_scales)} seed scales from {args.seeds}")
+    
     # Build metric description
     if len(metrics) == 1:
         _, metric_desc = CONSONANCE_METRICS[metrics[0][0]]
@@ -1719,7 +1869,7 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
         if args.runs > 1:
             print(f"\n--- Run {run + 1}/{args.runs} ---\n")
         
-        scale, fitness, details = evolve(config)
+        scale, fitness, details = evolve(config, seed_scales=seed_scales)
         
         if best_overall is None or fitness > best_overall[1]:
             best_overall = (scale, fitness, details)

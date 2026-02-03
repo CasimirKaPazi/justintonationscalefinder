@@ -60,6 +60,9 @@ class SearchConfig:
             self.metrics = [('tenney', 1.0)]
         if self.scale_metrics is None:
             self.scale_metrics = []
+        # Swap min/max if backwards
+        if self.min_notes > self.max_notes:
+            self.min_notes, self.max_notes = self.max_notes, self.min_notes
 
 
 def gcd(a: int, b: int) -> int:

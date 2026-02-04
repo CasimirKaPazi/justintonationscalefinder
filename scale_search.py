@@ -54,15 +54,53 @@ class SearchConfig:
     octave_range: int = 1       # Octaves above/below to consider (0=single, 1=3 total, 2=5 total)
     # EDO approximation (for neji scales)
     edo: int = 0                # If > 0, penalize notes far from this EDO's steps
+    # Note constraints
+    required_notes: List[Fraction] = None  # Notes that must be in every scale
+    excluded_notes: List[Fraction] = None  # Notes that must not appear
     
     def __post_init__(self):
         if self.metrics is None:
             self.metrics = [('tenney', 1.0)]
         if self.scale_metrics is None:
             self.scale_metrics = []
+        if self.required_notes is None:
+            self.required_notes = []
+        if self.excluded_notes is None:
+            self.excluded_notes = []
         # Swap min/max if backwards
         if self.min_notes > self.max_notes:
             self.min_notes, self.max_notes = self.max_notes, self.min_notes
+        # Validate: required notes must fit within scale size
+        if self.fixed_notes and len(self.required_notes) > self.fixed_notes - 1:
+            raise ValueError(f"Too many required notes ({len(self.required_notes)}) for {self.fixed_notes}-note scale")
+        if len(self.required_notes) > self.max_notes - 1:
+            raise ValueError(f"Too many required notes ({len(self.required_notes)}) for max {self.max_notes}-note scale")
+
+
+def parse_ratios(ratio_str: str) -> List[Fraction]:
+    """
+    Parse a comma-separated string of ratios into Fractions.
+    
+    Examples:
+        "3/2,5/4,7/4" -> [Fraction(3,2), Fraction(5,4), Fraction(7,4)]
+        "3/2, 5/4" -> [Fraction(3,2), Fraction(5,4)]  (spaces ok)
+        "" -> []
+    """
+    if not ratio_str or not ratio_str.strip():
+        return []
+    
+    ratios = []
+    for part in ratio_str.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        if '/' in part:
+            n, d = part.split('/')
+            ratios.append(Fraction(int(n.strip()), int(d.strip())))
+        else:
+            # Bare integer means n/1
+            ratios.append(Fraction(int(part.strip()), 1))
+    return ratios
 
 
 def gcd(a: int, b: int) -> int:
@@ -418,6 +456,73 @@ METRIC_NORMALIZATION = {
 }
 
 
+def scale_fingerprint(details: dict) -> Tuple[float, ...]:
+    """
+    Compute a metric fingerprint for a scale based on its evaluation details.
+    
+    The fingerprint is a tuple of normalized metric scores (0-1 range).
+    Scales with similar fingerprints are likely similar in character,
+    even if they have different notes.
+    
+    This allows O(k) diversity comparison (k = number of metrics)
+    instead of O(n) structural comparison.
+    """
+    fingerprint = []
+    
+    # Add interval metric averages (normalized)
+    for metric_name, _ in details.get('metrics', []):
+        raw = details['metric_averages'].get(metric_name, 0)
+        min_val, max_val = METRIC_NORMALIZATION.get(metric_name, (0, 1))
+        norm = (raw - min_val) / (max_val - min_val) if max_val > min_val else 0
+        norm = max(0.0, min(1.0, norm))
+        fingerprint.append(norm)
+    
+    # Add scale metric values (normalized)
+    for metric_name, _ in details.get('scale_metrics', []):
+        raw = details['metric_averages'].get(metric_name, 0)
+        min_val, max_val = METRIC_NORMALIZATION.get(metric_name, (0, 1))
+        norm = (raw - min_val) / (max_val - min_val) if max_val > min_val else 0
+        norm = max(0.0, min(1.0, norm))
+        fingerprint.append(norm)
+    
+    # Add quality score itself as a dimension
+    fingerprint.append(details.get('quality', 0))
+    
+    return tuple(fingerprint)
+
+
+def fingerprint_distance(fp1: Tuple[float, ...], fp2: Tuple[float, ...]) -> float:
+    """Euclidean distance between two fingerprints."""
+    if len(fp1) != len(fp2):
+        return 1.0  # Max distance if incompatible
+    return math.sqrt(sum((a - b) ** 2 for a, b in zip(fp1, fp2)))
+
+
+def fingerprint_diversity_score(fingerprint: Tuple[float, ...], 
+                                population_fingerprints: List[Tuple[float, ...]],
+                                k: int = 5) -> float:
+    """
+    Compute diversity score based on distance to k nearest neighbors in metric space.
+    
+    Higher score = more different from existing population.
+    Returns average distance to k nearest neighbors (0-1 range, roughly).
+    """
+    if not population_fingerprints:
+        return 1.0  # Maximum diversity if no population yet
+    
+    # Compute distances to all population members
+    distances = [fingerprint_distance(fingerprint, fp) for fp in population_fingerprints]
+    
+    # Average distance to k nearest (excluding self if present)
+    distances.sort()
+    k_nearest = distances[:min(k, len(distances))]
+    
+    if not k_nearest:
+        return 1.0
+    
+    return sum(k_nearest) / len(k_nearest)
+
+
 import re
 
 def parse_metrics(metric_str: str) -> Tuple[List[Tuple[str, float]], List[Tuple[str, float]], int]:
@@ -733,41 +838,74 @@ def evaluate_scale(scale: List[Fraction],
 
 
 def create_random_scale(candidates: List[Fraction], num_ratios: int, 
-                        weights: List[float] = None) -> List[Fraction]:
+                        weights: List[float] = None,
+                        required: List[Fraction] = None,
+                        excluded: Set[Fraction] = None) -> List[Fraction]:
     """
     Create a random scale with the given number of ratios.
-    If weights provided, uses weighted sampling (biased toward simpler ratios).
+    
+    Args:
+        candidates: List of possible ratios to choose from
+        num_ratios: Target number of ratios in scale
+        weights: Optional weights for biased sampling (toward simpler ratios)
+        required: Notes that must be included in the scale
+        excluded: Notes that must not be included
     """
-    if weights is not None and len(weights) == len(candidates):
+    if required is None:
+        required = []
+    if excluded is None:
+        excluded = set()
+    
+    # Start with required notes
+    selected = list(required)
+    selected_set = set(selected)
+    
+    # Filter candidates: remove required (already have them) and excluded
+    available_candidates = []
+    available_weights = []
+    for i, c in enumerate(candidates):
+        if c not in selected_set and c not in excluded:
+            available_candidates.append(c)
+            if weights is not None and len(weights) == len(candidates):
+                available_weights.append(weights[i])
+    
+    # How many more do we need?
+    remaining = num_ratios - len(selected)
+    
+    if remaining <= 0:
+        return selected
+    
+    if available_weights and len(available_weights) == len(available_candidates):
         # Weighted sampling without replacement
-        selected = []
-        available = list(range(len(candidates)))
-        available_weights = list(weights)
+        available_idx = list(range(len(available_candidates)))
+        current_weights = list(available_weights)
         
-        for _ in range(min(num_ratios, len(candidates))):
-            if not available:
+        for _ in range(min(remaining, len(available_candidates))):
+            if not available_idx:
                 break
             # Normalize weights
-            total = sum(available_weights)
+            total = sum(current_weights)
             if total <= 0:
-                idx_in_available = random.randrange(len(available))
+                idx_in_list = random.randrange(len(available_idx))
             else:
                 r = random.random() * total
                 cumsum = 0
-                idx_in_available = 0
-                for i, w in enumerate(available_weights):
+                idx_in_list = 0
+                for i, w in enumerate(current_weights):
                     cumsum += w
                     if r <= cumsum:
-                        idx_in_available = i
+                        idx_in_list = i
                         break
             
-            selected.append(candidates[available[idx_in_available]])
-            available.pop(idx_in_available)
-            available_weights.pop(idx_in_available)
-        
-        return selected
+            selected.append(available_candidates[available_idx[idx_in_list]])
+            available_idx.pop(idx_in_list)
+            current_weights.pop(idx_in_list)
     else:
-        return random.sample(candidates, min(num_ratios, len(candidates)))
+        # Uniform sampling
+        extras = random.sample(available_candidates, min(remaining, len(available_candidates)))
+        selected.extend(extras)
+    
+    return selected
 
 
 def load_seed_scales(filepath: str) -> List[List[Fraction]]:
@@ -785,7 +923,7 @@ def load_seed_scales(filepath: str) -> List[List[Fraction]]:
     
     Notes:
     - 2/1 (or just 2) at the end of a scale is removed (it's implicit)
-    - Ratios outside the octave (like 3/1, 9/4) ARE included for multi-octave scales
+    - Ratios outside the octave (like 3/1, 9/4) are reduced to the octave
     - Cents values (containing '.') are skipped
     
     Example simple format:
@@ -822,7 +960,7 @@ def load_seed_scales(filepath: str) -> List[List[Fraction]]:
         9/5
         2
     
-    Returns a list of scales, where each scale is a list of Fractions.
+    Returns a list of scales, where each scale is a list of Fractions (all 1 < r < 2).
     """
     scales = []
     current_scale = []
@@ -865,7 +1003,11 @@ def load_seed_scales(filepath: str) -> List[List[Fraction]]:
                             d = int(parts[1].strip())
                             ratio = Fraction(n, d)
                             if ratio > 1:
-                                current_scale.append(ratio)
+                                # Reduce to octave (1 < r < 2)
+                                while ratio >= 2:
+                                    ratio = ratio / 2
+                                if ratio > 1:  # Skip if it reduced to exactly 1
+                                    current_scale.append(ratio)
                     else:
                         # Could be integer like "2" meaning 2/1
                         # But also could be Scala note count line
@@ -874,7 +1016,11 @@ def load_seed_scales(filepath: str) -> List[List[Fraction]]:
                         if val >= 2 and (current_scale or val <= 4):
                             # Likely a ratio like 2, 3, 4 (meaning 2/1, 3/1, 4/1)
                             ratio = Fraction(val, 1)
-                            current_scale.append(ratio)
+                            # Reduce to octave
+                            while ratio >= 2:
+                                ratio = ratio / 2
+                            if ratio > 1:
+                                current_scale.append(ratio)
                         # Otherwise skip (likely note count metadata)
                 except (ValueError, ZeroDivisionError):
                     # Skip malformed lines (likely description text)
@@ -886,7 +1032,10 @@ def load_seed_scales(filepath: str) -> List[List[Fraction]]:
                 if current_scale[-1] == Fraction(2, 1):
                     current_scale = current_scale[:-1]
                 if current_scale:
-                    scales.append(current_scale)
+                    # Sanitize to remove duplicates and sort
+                    current_scale = sanitize_scale(current_scale)
+                    if current_scale:
+                        scales.append(current_scale)
     
     except FileNotFoundError:
         print(f"Warning: Seed file '{filepath}' not found.")
@@ -895,7 +1044,8 @@ def load_seed_scales(filepath: str) -> List[List[Fraction]]:
         print(f"Warning: Error reading seed file '{filepath}': {e}")
         return []
     
-    return scales
+    # Also sanitize the final scale list (removes duplicates between scales)
+    return [sanitize_scale(s) for s in scales if s]
 
 
 def reduce_to_octave(ratio: Fraction) -> Fraction:
@@ -905,6 +1055,38 @@ def reduce_to_octave(ratio: Fraction) -> Fraction:
     while ratio < 1:
         ratio = ratio * 2
     return ratio
+
+
+def sanitize_scale(scale: List[Fraction]) -> List[Fraction]:
+    """
+    Ensure all ratios in a scale are valid (1 < r < 2).
+    
+    - Reduces any ratio >= 2 to the octave
+    - Removes 1/1 and 2/1 (these are implicit)
+    - Removes duplicates
+    - Sorts by pitch
+    """
+    result = []
+    seen = set()
+    for r in scale:
+        # Reduce to octave
+        while r >= 2:
+            r = r / 2
+        while r < 1:
+            r = r * 2
+        
+        # Skip 1/1 and 2/1
+        if r == Fraction(1, 1) or r == Fraction(2, 1):
+            continue
+        
+        # Skip duplicates
+        key = (r.numerator, r.denominator)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(r)
+    
+    return sorted(result, key=lambda x: float(x))
 
 
 def is_valid_ratio(ratio: Fraction, limit: int) -> bool:
@@ -1018,6 +1200,108 @@ def mutate_mediant(note1: Fraction, note2: Fraction, limit: int) -> Fraction:
     return None
 
 
+def scale_invert(scale: List[Fraction], limit: int = None) -> List[Fraction]:
+    """
+    Invert a scale - mirror all intervals around the octave.
+    
+    For each ratio r, the inverted ratio is 2/r.
+    Turns major into minor and vice versa.
+    
+    Example: Major scale [9/8, 5/4, 4/3, 3/2, 5/3, 15/8]
+          -> Inverted:   [16/15, 6/5, 4/3, 3/2, 8/5, 16/9]
+             (which is Phrygian mode)
+    
+    Args:
+        scale: List of ratios (between 1 and 2, not including 1/1 or 2/1)
+        limit: Optional ratio limit - if set, filters out ratios exceeding it
+    
+    Returns:
+        Inverted scale, sorted by pitch
+    """
+    inverted = []
+    for r in scale:
+        inv = Fraction(2, 1) / r  # 2/r
+        # Reduce to octave (should already be, but be safe)
+        while inv >= 2:
+            inv = inv / 2
+        while inv < 1:
+            inv = inv * 2
+        
+        # Skip 1/1 and 2/1 - these are implicit, not scale degrees
+        if inv == Fraction(1, 1) or inv == Fraction(2, 1):
+            continue
+        
+        if limit is None or (inv.numerator <= limit and inv.denominator <= limit):
+            inverted.append(inv)
+    
+    return sorted(inverted, key=lambda r: float(r))
+
+
+def scale_rotate(scale: List[Fraction], pivot_idx: int = None, limit: int = None) -> List[Fraction]:
+    """
+    Rotate a scale - choose a new tonic (mode change).
+    
+    Makes the note at pivot_idx become the new 1/1, and recalculates
+    all other intervals relative to it.
+    
+    Example: Major scale [9/8, 5/4, 4/3, 3/2, 5/3, 15/8], pivot on 5/4
+          -> Dorian-ish: intervals relative to 5/4
+    
+    Args:
+        scale: List of ratios (between 1 and 2, not including 1/1 or 2/1)
+        pivot_idx: Index of note to become new 1/1. If None, random choice.
+        limit: Optional ratio limit - if set, filters out ratios exceeding it
+    
+    Returns:
+        Rotated scale, sorted by pitch
+    """
+    if not scale:
+        return scale
+    
+    if pivot_idx is None:
+        pivot_idx = random.randrange(len(scale))
+    
+    pivot = scale[pivot_idx]
+    
+    # Build new scale: all intervals relative to pivot
+    # The pivot itself becomes 1/1 (implicit, not included)
+    # The original 1/1 becomes a note relative to pivot
+    
+    rotated = []
+    
+    # Original 1/1 relative to pivot = 1/pivot (then octave reduce)
+    inv_pivot = Fraction(1, 1) / pivot
+    while inv_pivot < 1:
+        inv_pivot = inv_pivot * 2
+    while inv_pivot >= 2:
+        inv_pivot = inv_pivot / 2
+    # Only add if not 1/1 or 2/1 and within limit
+    if inv_pivot != Fraction(1, 1) and inv_pivot != Fraction(2, 1):
+        if limit is None or (inv_pivot.numerator <= limit and inv_pivot.denominator <= limit):
+            rotated.append(inv_pivot)
+    
+    # Each other note relative to pivot
+    for i, note in enumerate(scale):
+        if i == pivot_idx:
+            continue  # This becomes 1/1, skip
+        
+        rel = note / pivot
+        # Reduce to octave
+        while rel >= 2:
+            rel = rel / 2
+        while rel < 1:
+            rel = rel * 2
+        
+        # Skip 1/1 and 2/1
+        if rel == Fraction(1, 1) or rel == Fraction(2, 1):
+            continue
+        
+        if limit is None or (rel.numerator <= limit and rel.denominator <= limit):
+            rotated.append(rel)
+    
+    return sorted(set(rotated), key=lambda r: float(r))
+
+
 def mutate(scale: List[Fraction], candidates: List[Fraction], config: SearchConfig) -> List[Fraction]:
     """
     Mutate a scale using musically-meaningful operations:
@@ -1027,15 +1311,25 @@ def mutate(scale: List[Fraction], candidates: List[Fraction], config: SearchConf
     4. Stack intervals La Monte Young style (7/4 × 7/4 × 3/2 × 3/2...)
     5. Mediant - create ratio "between" two scale notes
     6. Random replacement from candidates (fallback)
+    
+    Respects config.required_notes (won't remove) and config.excluded_notes (won't add).
     """
     scale = scale.copy()
     scale_set = set(scale)
     limit = config.ratio_limit
+    required_set = set(config.required_notes) if config.required_notes else set()
+    excluded_set = set(config.excluded_notes) if config.excluded_notes else set()
+    
+    # Indices of notes that can be mutated (not required)
+    mutable_indices = [i for i, note in enumerate(scale) if note not in required_set]
+    if not mutable_indices:
+        return scale  # All notes are required, can't mutate
     
     def try_add_note(new_note, idx):
-        """Helper: replace note at idx if new_note is valid."""
+        """Helper: replace note at idx if new_note is valid and not excluded."""
         if (new_note and 
             new_note not in scale_set and 
+            new_note not in excluded_set and
             new_note != Fraction(1,1) and 
             new_note != Fraction(2,1)):
             scale[idx] = new_note
@@ -1045,46 +1339,46 @@ def mutate(scale: List[Fraction], candidates: List[Fraction], config: SearchConf
     # Choose mutation type
     r = random.random()
     
-    if r < 0.18 and scale:
+    if r < 0.18 and mutable_indices:
         # Transpose by simple interval
-        idx = random.randrange(len(scale))
+        idx = random.choice(mutable_indices)
         if try_add_note(mutate_transpose(scale[idx], limit), idx):
             return scale
     
-    if r < 0.30 and scale:
+    if r < 0.30 and mutable_indices:
         # Comma shift (subtle pitch adjustment)
-        idx = random.randrange(len(scale))
+        idx = random.choice(mutable_indices)
         if try_add_note(mutate_comma_shift(scale[idx], limit), idx):
             return scale
     
-    if r < 0.48 and len(scale) >= 2:
+    if r < 0.48 and len(scale) >= 2 and mutable_indices:
         # Combine two scale notes
-        idx = random.randrange(len(scale))
+        idx = random.choice(mutable_indices)
         note1 = scale[idx]
         others = [n for n in scale if n != note1]
         note2 = random.choice(others) if others else note1
         if try_add_note(mutate_combine(note1, note2, limit), idx):
             return scale
     
-    if r < 0.62 and scale:
+    if r < 0.62 and mutable_indices:
         # La Monte Young style interval stacking
-        idx = random.randrange(len(scale))
+        idx = random.choice(mutable_indices)
         if try_add_note(mutate_stack(scale, limit), idx):
             return scale
     
-    if r < 0.74 and len(scale) >= 2:
+    if r < 0.74 and len(scale) >= 2 and mutable_indices:
         # Mediant of two scale notes
-        idx = random.randrange(len(scale))
+        idx = random.choice(mutable_indices)
         note1 = scale[idx]
         others = [n for n in scale if n != note1]
         note2 = random.choice(others) if others else note1
         if try_add_note(mutate_mediant(note1, note2, limit), idx):
             return scale
     
-    # Fallback: random replacement from candidates
-    available = [r for r in candidates if r not in scale_set]
-    if scale and available:
-        idx = random.randrange(len(scale))
+    # Fallback: random replacement from candidates (excluding excluded notes)
+    available = [c for c in candidates if c not in scale_set and c not in excluded_set]
+    if mutable_indices and available:
+        idx = random.choice(mutable_indices)
         scale[idx] = random.choice(available)
     
     return scale
@@ -1094,15 +1388,28 @@ def crossover_uniform(parent1: List[Fraction], parent2: List[Fraction], config: 
     """
     Uniform crossover: combine both parents and randomly sample.
     Simple but doesn't preserve structure.
+    Respects required_notes (always included) and excluded_notes (filtered out).
     """
-    combined = list(set(parent1) | set(parent2))
+    required = set(config.required_notes) if config.required_notes else set()
+    excluded = set(config.excluded_notes) if config.excluded_notes else set()
+    
+    # Combine parents, filter excluded, ensure required
+    combined = (set(parent1) | set(parent2)) - excluded
+    combined = combined | required  # Add back any required notes
+    combined = list(combined)
     
     # Convert note count to ratio count: N notes = N-1 ratios
     if config.fixed_notes:
         num_ratios = config.fixed_notes - 1
         if len(combined) < num_ratios:
             return parent1.copy()
-        return random.sample(combined, num_ratios)
+        # Must keep required, sample rest
+        optional = [n for n in combined if n not in required]
+        num_optional = num_ratios - len(required)
+        if num_optional <= 0:
+            return list(required)[:num_ratios]
+        sampled = list(required) + random.sample(optional, min(num_optional, len(optional)))
+        return sampled
     
     max_ratios = config.max_notes - 1
     min_ratios = config.min_notes - 1
@@ -1110,27 +1417,37 @@ def crossover_uniform(parent1: List[Fraction], parent2: List[Fraction], config: 
     if len(combined) <= max_ratios:
         return combined
     
+    # Must keep required, sample rest
+    optional = [n for n in combined if n not in required]
     num_ratios = random.randint(min_ratios, max_ratios)
-    return random.sample(combined, min(num_ratios, len(combined)))
+    num_optional = num_ratios - len(required)
+    if num_optional <= 0:
+        return list(required)[:num_ratios]
+    sampled = list(required) + random.sample(optional, min(num_optional, len(optional)))
+    return sampled
 
 
 def crossover_blend(parent1: List[Fraction], parent2: List[Fraction], config: SearchConfig) -> List[Fraction]:
     """
     Blend crossover: alternate taking notes from each parent (sorted by pitch).
     Preserves some structural properties from both parents.
+    Respects required_notes and excluded_notes.
     """
+    required = set(config.required_notes) if config.required_notes else set()
+    excluded = set(config.excluded_notes) if config.excluded_notes else set()
+    
     p1_sorted = sorted(parent1, key=lambda r: float(r))
     p2_sorted = sorted(parent2, key=lambda r: float(r))
     
     # Interleave from both parents
-    child = []
+    child = list(required)  # Start with required notes
     i, j = 0, 0
     use_p1 = random.random() < 0.5
     
     target_len = len(parent1) if config.fixed_notes else random.randint(
         config.min_notes - 1, config.max_notes - 1)
     
-    seen = set()
+    seen = set(required)
     while len(child) < target_len and (i < len(p1_sorted) or j < len(p2_sorted)):
         if use_p1 and i < len(p1_sorted):
             note = p1_sorted[i]
@@ -1144,7 +1461,7 @@ def crossover_blend(parent1: List[Fraction], parent2: List[Fraction], config: Se
         else:
             break
         
-        if note not in seen:
+        if note not in seen and note not in excluded:
             child.append(note)
             seen.add(note)
         use_p1 = not use_p1
@@ -1156,7 +1473,11 @@ def crossover_pivot(parent1: List[Fraction], parent2: List[Fraction], config: Se
     """
     Pivot crossover: choose a pivot pitch, take lower notes from one parent
     and higher notes from the other.
+    Respects required_notes and excluded_notes.
     """
+    required = set(config.required_notes) if config.required_notes else set()
+    excluded = set(config.excluded_notes) if config.excluded_notes else set()
+    
     p1_sorted = sorted(parent1, key=lambda r: float(r))
     p2_sorted = sorted(parent2, key=lambda r: float(r))
     
@@ -1167,18 +1488,18 @@ def crossover_pivot(parent1: List[Fraction], parent2: List[Fraction], config: Se
     if random.random() < 0.5:
         p1_sorted, p2_sorted = p2_sorted, p1_sorted
     
-    child = []
-    seen = set()
+    child = list(required)  # Start with required notes
+    seen = set(required)
     
     for note in p1_sorted:
         cents = 1200 * math.log2(float(note))
-        if cents < pivot and note not in seen:
+        if cents < pivot and note not in seen and note not in excluded:
             child.append(note)
             seen.add(note)
     
     for note in p2_sorted:
         cents = 1200 * math.log2(float(note))
-        if cents >= pivot and note not in seen:
+        if cents >= pivot and note not in seen and note not in excluded:
             child.append(note)
             seen.add(note)
     
@@ -1187,10 +1508,16 @@ def crossover_pivot(parent1: List[Fraction], parent2: List[Fraction], config: Se
         config.min_notes - 1, config.max_notes - 1)
     
     if len(child) > target_len:
-        child = random.sample(child, target_len)
+        # Must keep required, sample rest
+        optional = [n for n in child if n not in required]
+        num_optional = target_len - len(required)
+        if num_optional <= 0:
+            child = list(required)[:target_len]
+        else:
+            child = list(required) + random.sample(optional, min(num_optional, len(optional)))
     elif len(child) < target_len:
-        # Fill from combined parents
-        all_notes = list(set(parent1) | set(parent2))
+        # Fill from combined parents (excluding excluded notes)
+        all_notes = (set(parent1) | set(parent2)) - excluded
         available = [n for n in all_notes if n not in seen]
         while len(child) < target_len and available:
             note = random.choice(available)
@@ -1205,7 +1532,11 @@ def crossover_interval_preserving(parent1: List[Fraction], parent2: List[Fractio
     """
     Interval-preserving crossover: try to preserve good interval relationships
     from both parents by keeping contiguous pitch regions.
+    Respects required_notes and excluded_notes.
     """
+    required = set(config.required_notes) if config.required_notes else set()
+    excluded = set(config.excluded_notes) if config.excluded_notes else set()
+    
     p1_sorted = sorted(parent1, key=lambda r: float(r))
     p2_sorted = sorted(parent2, key=lambda r: float(r))
     
@@ -1226,18 +1557,26 @@ def crossover_interval_preserving(parent1: List[Fraction], parent2: List[Fractio
         else:
             region2 = p2_sorted
         
-        child = list(set(region1) | set(region2))
+        child_set = (set(region1) | set(region2) | required) - excluded
+        child = list(child_set)
     else:
-        child = list(set(parent1) | set(parent2))
+        child_set = (set(parent1) | set(parent2) | required) - excluded
+        child = list(child_set)
     
     # Adjust to target length
     target_len = (config.fixed_notes - 1) if config.fixed_notes else random.randint(
         config.min_notes - 1, config.max_notes - 1)
     
     if len(child) > target_len:
-        child = random.sample(child, target_len)
+        # Must keep required, sample rest
+        optional = [n for n in child if n not in required]
+        num_optional = target_len - len(required)
+        if num_optional <= 0:
+            child = list(required)[:target_len]
+        else:
+            child = list(required) + random.sample(optional, min(num_optional, len(optional)))
     elif len(child) < target_len:
-        all_notes = list(set(parent1) | set(parent2))
+        all_notes = (set(parent1) | set(parent2)) - excluded
         available = [n for n in all_notes if n not in child]
         while len(child) < target_len and available:
             note = random.choice(available)
@@ -1276,16 +1615,24 @@ def local_search(scale: List[Fraction], candidates: List[Fraction],
     Tries:
     1. Swapping each note with nearby candidates
     2. Single-note mutations
+    
+    Respects required_notes (won't modify) and excluded_notes (won't add).
     """
+    required = set(config.required_notes) if config.required_notes else set()
+    excluded = set(config.excluded_notes) if config.excluded_notes else set()
+    
     current = scale.copy()
     current_fitness = eval_fn(current)
     scale_set = set(current)
     
+    # Indices of notes that can be modified
+    mutable_indices = [i for i, note in enumerate(current) if note not in required]
+    
     for _ in range(max_iterations):
         improved = False
         
-        # Try swapping each note with a similar one
-        for i in range(len(current)):
+        # Try swapping each mutable note with a similar one
+        for i in mutable_indices:
             note = current[i]
             note_cents = 1200 * math.log2(float(note))
             
@@ -1295,11 +1642,11 @@ def local_search(scale: List[Fraction], candidates: List[Fraction],
                 lo = bisect.bisect_left(candidate_cents, (note_cents - 100, -1))
                 hi = bisect.bisect_right(candidate_cents, (note_cents + 100, float('inf')))
                 nearby = [candidates[idx] for cents, idx in candidate_cents[lo:hi]
-                         if candidates[idx] not in scale_set]
+                         if candidates[idx] not in scale_set and candidates[idx] not in excluded]
             else:
                 # Fallback to linear scan
                 nearby = [c for c in candidates 
-                         if c not in scale_set 
+                         if c not in scale_set and c not in excluded
                          and abs(1200 * math.log2(float(c)) - note_cents) < 100]
             
             for replacement in nearby[:5]:  # Try up to 5 nearby notes
@@ -1318,7 +1665,7 @@ def local_search(scale: List[Fraction], candidates: List[Fraction],
                 break
         
         if not improved:
-            # Try a single mutation
+            # Try a single mutation (mutate already respects constraints)
             mutated = mutate(current, candidates, config)
             mutated_fitness = eval_fn(mutated)
             if mutated_fitness > current_fitness:
@@ -1393,6 +1740,80 @@ def select_elites(population: List[Tuple[float, List[Fraction]]],
     return elites
 
 
+def select_elites_diverse(population: List[Tuple[float, List[Fraction]]],
+                          n_elites: int,
+                          get_fingerprint_fn) -> List[Tuple[float, List[Fraction]]]:
+    """
+    Select elite individuals with fingerprint-based diversity.
+    
+    Combines fitness ranking with metric-space diversity:
+    - First elite is always the best (greedy)
+    - Subsequent elites balance fitness and distance from already-selected elites
+    
+    This promotes exploration of different regions of the metric space.
+    
+    Args:
+        population: List of (fitness, scale) tuples
+        n_elites: Number of elites to select
+        get_fingerprint_fn: Function to get fingerprint for a scale
+    """
+    if n_elites <= 0 or not population:
+        return []
+    
+    # Sort by fitness
+    sorted_pop = sorted(population, key=lambda x: x[0], reverse=True)
+    
+    elites = []
+    elite_fingerprints = []
+    seen_scales = set()
+    
+    for k in range(n_elites):
+        best_candidate = None
+        best_score = -float('inf')
+        
+        # Consider top candidates (larger window for later elites)
+        window_size = min(10 + 5 * k, len(sorted_pop))
+        
+        for i, ind in enumerate(sorted_pop[:window_size]):
+            scale_key = frozenset((r.numerator, r.denominator) for r in ind[1])
+            if scale_key in seen_scales:
+                continue
+            
+            fitness = ind[0]
+            fp = get_fingerprint_fn(ind[1])
+            
+            if k == 0:
+                # First elite: pure fitness
+                score = fitness
+            else:
+                # Later elites: fitness + diversity bonus
+                # Diversity = average distance to already-selected elites
+                if elite_fingerprints and fp:
+                    diversity = sum(fingerprint_distance(fp, efp) for efp in elite_fingerprints) / len(elite_fingerprints)
+                else:
+                    diversity = 0.5
+                
+                # Fitness rank penalty (prefer higher-ranked)
+                rank_factor = 1.0 - (i / window_size) * 0.3  # 1.0 to 0.7
+                
+                # Combine: mostly fitness, but diversity helps break ties
+                score = fitness * rank_factor + diversity * 0.1
+            
+            if score > best_score:
+                best_score = score
+                best_candidate = ind
+        
+        if best_candidate:
+            elites.append(best_candidate)
+            scale_key = frozenset((r.numerator, r.denominator) for r in best_candidate[1])
+            seen_scales.add(scale_key)
+            fp = get_fingerprint_fn(best_candidate[1])
+            if fp:
+                elite_fingerprints.append(fp)
+    
+    return elites
+
+
 def evolve(config: SearchConfig, verbose: bool = True, 
            seed_scales: List[List[Fraction]] = None) -> Tuple[List[Fraction], float, dict]:
     """
@@ -1434,9 +1855,17 @@ def evolve(config: SearchConfig, verbose: bool = True,
     note_desc = f"exactly {config.fixed_notes}" if config.fixed_notes else f"up to {config.max_notes}"
     octave_desc = f"{2 * octave_range + 1} octaves" if octave_range > 0 else "1 octave"
     
+    # Note constraints
+    required_notes = config.required_notes if config.required_notes else []
+    excluded_notes = set(config.excluded_notes) if config.excluded_notes else set()
+    
     if verbose:
         print(f"Generated {len(candidates)} candidate ratios")
         print(f"Searching for scales with {note_desc} notes")
+        if required_notes:
+            print(f"Required notes: {', '.join(str(r) for r in required_notes)}")
+        if excluded_notes:
+            print(f"Excluded notes: {', '.join(str(r) for r in excluded_notes)}")
         print(f"Evaluating across {octave_desc}")
         print(f"Using metric: {metric_desc}")
         print()
@@ -1448,12 +1877,24 @@ def evolve(config: SearchConfig, verbose: bool = True,
     # Scale fitness cache: frozenset of (n,d) tuples -> fitness
     scale_cache = {}
     
+    # Fingerprint cache: frozenset of (n,d) tuples -> fingerprint tuple
+    fingerprint_cache = {}
+    
     def eval_scale_cached(scale):
+        """Evaluate scale and cache both fitness and fingerprint."""
         key = frozenset((r.numerator, r.denominator) for r in scale)
         if key not in scale_cache:
-            fitness, _ = evaluate_scale(scale, metrics, octave_range, interval_cache, scale_metrics, edo)
+            fitness, details = evaluate_scale(scale, metrics, octave_range, interval_cache, scale_metrics, edo)
             scale_cache[key] = fitness
+            fingerprint_cache[key] = scale_fingerprint(details)
         return scale_cache[key]
+    
+    def get_fingerprint(scale):
+        """Get fingerprint for a scale (must be evaluated first)."""
+        key = frozenset((r.numerator, r.denominator) for r in scale)
+        if key not in fingerprint_cache:
+            eval_scale_cached(scale)  # This will populate the cache
+        return fingerprint_cache.get(key, ())
     
     # Use provided seeds (empty list means no seeds)
     if seed_scales is None:
@@ -1463,22 +1904,57 @@ def evolve(config: SearchConfig, verbose: bool = True,
     # Note: N notes = N-1 ratios (tonic 1/1 is implicit, octave 2/1 is repeat)
     population = []
     
-    # Add seed scales (filtered to appropriate size)
-    for seed in seed_scales:
-        if config.fixed_notes:
-            target_len = config.fixed_notes - 1
-            if len(seed) == target_len:
-                fitness = eval_scale_cached(seed)
-                population.append((fitness, seed.copy()))
-            elif len(seed) > target_len:
-                # Randomly sample to target length
-                trimmed = random.sample(seed, target_len)
-                fitness = eval_scale_cached(trimmed)
-                population.append((fitness, trimmed))
+    def check_constraints(scale):
+        """Check if scale satisfies required/excluded constraints."""
+        scale_set = set(scale)
+        if not all(r in scale_set for r in required_notes):
+            return False
+        if any(e in scale_set for e in excluded_notes):
+            return False
+        return True
+    
+    def add_scale_if_valid(scale, target_len=None):
+        """Add scale to population if it meets size and constraint requirements."""
+        # Sanitize: ensure all ratios are within octave, no duplicates
+        scale = sanitize_scale(scale)
+        
+        if not scale or not check_constraints(scale):
+            return
+        
+        if target_len is not None:
+            if len(scale) == target_len:
+                fitness = eval_scale_cached(scale)
+                population.append((fitness, list(scale)))
+            elif len(scale) > target_len:
+                # Randomly sample to target length, but keep required notes
+                optional = [n for n in scale if n not in required_notes]
+                num_optional = target_len - len(required_notes)
+                if num_optional >= 0 and len(optional) >= num_optional:
+                    trimmed = list(required_notes) + random.sample(optional, num_optional)
+                    fitness = eval_scale_cached(trimmed)
+                    population.append((fitness, trimmed))
         else:
-            if config.min_notes - 1 <= len(seed) <= config.max_notes - 1:
-                fitness = eval_scale_cached(seed)
-                population.append((fitness, seed.copy()))
+            if config.min_notes - 1 <= len(scale) <= config.max_notes - 1:
+                fitness = eval_scale_cached(scale)
+                population.append((fitness, list(scale)))
+    
+    # Add seed scales and their transformations
+    target_len = config.fixed_notes - 1 if config.fixed_notes else None
+    
+    for seed in seed_scales:
+        # Original seed
+        add_scale_if_valid(seed, target_len)
+        
+        # Inverted version
+        inverted = scale_invert(seed, config.ratio_limit)
+        if inverted:
+            add_scale_if_valid(inverted, target_len)
+        
+        # Rotated versions (try a few random rotations)
+        for _ in range(min(3, len(seed))):
+            rotated = scale_rotate(seed, limit=config.ratio_limit)
+            if rotated:
+                add_scale_if_valid(rotated, target_len)
     
     # Fill rest with random scales (biased toward simpler ratios)
     while len(population) < config.population_size:
@@ -1486,7 +1962,8 @@ def evolve(config: SearchConfig, verbose: bool = True,
             num_ratios = config.fixed_notes - 1
         else:
             num_ratios = random.randint(config.min_notes - 1, config.max_notes - 1)
-        scale = create_random_scale(candidates, num_ratios, candidate_weights)
+        scale = create_random_scale(candidates, num_ratios, candidate_weights,
+                                    required=required_notes, excluded=excluded_notes)
         fitness = eval_scale_cached(scale)
         population.append((fitness, scale))
     
@@ -1498,41 +1975,67 @@ def evolve(config: SearchConfig, verbose: bool = True,
     
     # Track for stagnation and early stopping
     stagnation_counter = 0
+    last_reheat = 0  # Generation of last reheat
     
     for gen in range(config.generations):
         population.sort(key=lambda x: x[0], reverse=True)
         
-        # Track best ever found (fitness is -score, so higher fitness = better)
-        if population[0][0] > best_ever[0]:
-            best_ever = population[0]
+        # Track best ever using RAW fitness (re-evaluate top candidate to get true quality)
+        top_scale = population[0][1]
+        top_raw_fitness = eval_scale_cached(top_scale)  # This is raw, from cache
+        if top_raw_fitness > best_ever[0]:
+            best_ever = (top_raw_fitness, top_scale)
             stagnation_counter = 0
         else:
             stagnation_counter += 1
         
-        # Early stopping if converged
-        if stagnation_counter > 20:
+        # Reheat: when stagnating, bump temperature back up to explore more
+        # Only reheat if: stagnating, enough time since last reheat, and temp is actually low
+        reheat_target = config.initial_temp * 0.5
+        if (stagnation_counter >= 15 and 
+            (gen - last_reheat) > 30 and 
+            temperature < reheat_target * 0.6):  # Only reheat if temp dropped below 60% of target
+            temperature = reheat_target
+            last_reheat = gen
+            if verbose:
+                print(f"Gen {gen:4d}: reheating (stagnation={stagnation_counter}), temp -> {temperature:.4f}")
+        
+        # Early stopping if converged (but give more time)
+        if stagnation_counter > 40:
             if verbose:
                 best_quality = best_ever[0]
                 num_intervals = sum(1 for k in interval_cache if isinstance(k, tuple) and len(k) == 2 and isinstance(k[0], int))
-                print(f"Gen {gen:4d}: converged (no improvement for 20 gens), best quality = {best_quality:.4f}, intervals = {num_intervals}")
+                print(f"Gen {gen:4d}: converged (no improvement for 40 gens), best quality = {best_quality:.4f}, intervals = {num_intervals}")
             break
         
         # Adaptive mutation rate (increase when stagnating)
         adaptive_mutation = config.mutation_rate
-        if stagnation_counter > 10:
-            adaptive_mutation = min(0.8, config.mutation_rate * (1 + stagnation_counter / 20))
+        if stagnation_counter > 5:
+            adaptive_mutation = min(0.9, config.mutation_rate * (1 + stagnation_counter / 10))
         
         if verbose and gen % 10 == 0:
             # Print quality (higher = better)
-            current_quality = population[0][0]
-            best_quality = best_ever[0]
+            # Show raw quality (not boosted) for current top
+            current_quality = eval_scale_cached(population[0][1])  # Raw from cache
+            best_quality = best_ever[0]  # Already raw
             unique = len(set(frozenset((r.numerator, r.denominator) for r in ind[1]) for ind in population[:50]))
-            # Count unique intervals cached (keys that are tuples of 2 ints, not (tuple, string))
-            num_intervals = sum(1 for k in interval_cache if isinstance(k, tuple) and len(k) == 2 and isinstance(k[0], int))
-            if abs(current_quality - best_quality) < 0.0001:
-                print(f"Gen {gen:4d}: quality = {current_quality:.4f}, temp = {temperature:.4f}, unique = {unique}/50, scales = {len(scale_cache)}, intervals = {num_intervals}")
+            
+            # Compute fingerprint diversity (average pairwise distance in top 20)
+            fp_sample = [get_fingerprint(ind[1]) for ind in population[:20]]
+            fp_sample = [fp for fp in fp_sample if fp]
+            if len(fp_sample) >= 2:
+                fp_dists = []
+                for i in range(len(fp_sample)):
+                    for j in range(i+1, len(fp_sample)):
+                        fp_dists.append(fingerprint_distance(fp_sample[i], fp_sample[j]))
+                fp_div = sum(fp_dists) / len(fp_dists) if fp_dists else 0
             else:
-                print(f"Gen {gen:4d}: quality = {current_quality:.4f} (best = {best_quality:.4f}), temp = {temperature:.4f}, unique = {unique}/50, scales = {len(scale_cache)}, intervals = {num_intervals}")
+                fp_div = 0
+            
+            if abs(current_quality - best_quality) < 0.0001:
+                print(f"Gen {gen:4d}: quality = {current_quality:.4f}, temp = {temperature:.4f}, unique = {unique}/50, fp_div = {fp_div:.3f}")
+            else:
+                print(f"Gen {gen:4d}: quality = {current_quality:.4f} (best = {best_quality:.4f}), temp = {temperature:.4f}, unique = {unique}/50, fp_div = {fp_div:.3f}")
         
         # Create new population
         new_population = []
@@ -1540,11 +2043,29 @@ def evolve(config: SearchConfig, verbose: bool = True,
         # Always preserve best_ever (critical: don't lose the best solution found)
         new_population.append(best_ever)
         
-        # Elite selection with increasing randomness (avoids expensive similarity calculations)
-        elites = select_elites(population, config.elite_count + 3)
+        # Inject random individuals when stagnating (helps escape local optima)
+        num_random_inject = 0
+        if stagnation_counter > 10:
+            num_random_inject = min(config.population_size // 5, stagnation_counter)  # Up to 20% random
+            for _ in range(num_random_inject):
+                if config.fixed_notes:
+                    num_ratios = config.fixed_notes - 1
+                else:
+                    num_ratios = random.randint(config.min_notes - 1, config.max_notes - 1)
+                fresh = create_random_scale(candidates, num_ratios, candidate_weights,
+                                           required=required_notes, excluded=excluded_notes)
+                fitness = eval_scale_cached(fresh)
+                new_population.append((fitness, fresh))
+        
+        # Elite selection using fingerprint-based diversity
+        elites = select_elites_diverse(population, config.elite_count + 3, get_fingerprint)
         for elite in elites[:config.elite_count + 1]:  # One less since we added best_ever
             if elite[1] != best_ever[1]:  # Don't duplicate best_ever
                 new_population.append(elite)
+        
+        # Get population fingerprints for diversity scoring
+        pop_fingerprints = [get_fingerprint(ind[1]) for ind in population[:50]]  # Top 50
+        pop_fingerprints = [fp for fp in pop_fingerprints if fp]  # Filter empty
         
         # Breed rest
         while len(new_population) < config.population_size:
@@ -1559,11 +2080,42 @@ def evolve(config: SearchConfig, verbose: bool = True,
             if random.random() < adaptive_mutation:
                 child = mutate(child, candidates, config)
             
-            fitness = eval_scale_cached(child)
+            # Sanitize: ensure all ratios are within octave
+            child = sanitize_scale(child)
+            if not child:
+                continue  # Skip if sanitization produced empty scale
             
-            # Simulated annealing acceptance
-            if new_population and fitness < new_population[-1][0]:
-                delta = new_population[-1][0] - fitness
+            # Occasional drastic mutations: invert or rotate entire scale
+            # These help escape local optima by exploring different modes/inversions
+            # Only use if result has same length (or valid length for variable scales)
+            target_len = len(child)
+            
+            if random.random() < 0.03:  # 3% chance to invert
+                inverted = scale_invert(child, config.ratio_limit)
+                if (inverted and len(inverted) == target_len and check_constraints(inverted)):
+                    child = inverted
+            elif random.random() < 0.05:  # ~5% chance to rotate
+                rotated = scale_rotate(child, limit=config.ratio_limit)
+                if (rotated and len(rotated) == target_len and check_constraints(rotated)):
+                    child = rotated
+            
+            raw_fitness = eval_scale_cached(child)
+            selection_fitness = raw_fitness
+            
+            # Add small diversity bonus based on metric-space distance from population
+            # This encourages exploration of different regions of the quality landscape
+            # Note: bonus only affects selection, not best_ever tracking
+            if pop_fingerprints and stagnation_counter > 5:
+                child_fp = get_fingerprint(child)
+                if child_fp:
+                    diversity = fingerprint_diversity_score(child_fp, pop_fingerprints, k=5)
+                    # Small bonus (up to ~0.02) for diverse scales
+                    diversity_bonus = diversity * 0.02 * min(1.0, stagnation_counter / 20)
+                    selection_fitness = raw_fitness + diversity_bonus
+            
+            # Simulated annealing acceptance (uses boosted fitness for selection)
+            if new_population and selection_fitness < new_population[-1][0]:
+                delta = new_population[-1][0] - selection_fitness
                 accept_prob = math.exp(-delta / temperature) if temperature > 0 else 0
                 if random.random() > accept_prob:
                     if random.random() < 0.3:
@@ -1571,10 +2123,18 @@ def evolve(config: SearchConfig, verbose: bool = True,
                             num_ratios = config.fixed_notes - 1
                         else:
                             num_ratios = random.randint(config.min_notes - 1, config.max_notes - 1)
-                        child = create_random_scale(candidates, num_ratios, candidate_weights)
-                        fitness = eval_scale_cached(child)
+                        child = create_random_scale(candidates, num_ratios, candidate_weights,
+                                                    required=required_notes, excluded=excluded_notes)
+                        raw_fitness = eval_scale_cached(child)
+                        selection_fitness = raw_fitness
             
-            new_population.append((fitness, child))
+            # Track best_ever using RAW fitness (no diversity bonus)
+            if raw_fitness > best_ever[0]:
+                best_ever = (raw_fitness, child)
+                stagnation_counter = 0
+            
+            # Store with selection_fitness for population dynamics
+            new_population.append((selection_fitness, child))
         
         # Periodic local search on top individuals (every 25 generations when stagnating)
         if stagnation_counter > 10 and gen % 25 == 0:
@@ -1609,6 +2169,9 @@ def evolve(config: SearchConfig, verbose: bool = True,
 
 def format_scale(scale: List[Fraction], verbose: bool = False) -> str:
     """Format a scale for display."""
+    # Sanitize first to ensure valid output
+    scale = sanitize_scale(scale)
+    
     lines = []
     for r in sorted(scale):
         if verbose:
@@ -1774,6 +2337,10 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
                         help="Octave range (default: 1 = 3 octaves, 0=single, 2=5 octaves)")
     parser.add_argument("--seeds", type=str, default=None,
                         help="File with seed scales to initialize population (default: none)")
+    parser.add_argument("--include", type=str, default=None,
+                        help="Required notes (comma-separated ratios, e.g., '3/2,5/4')")
+    parser.add_argument("--exclude", type=str, default=None,
+                        help="Excluded notes (comma-separated ratios, e.g., '7/4,11/8')")
     parser.add_argument("--compare", action="store_true", 
                         help="Compare known scales instead of searching")
     parser.add_argument("--list-metrics", action="store_true", 
@@ -1818,6 +2385,10 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
             evaluate_named_scale(name, ratios, metrics, args.octaves, scale_metrics, edo)
         return
     
+    # Parse required/excluded notes
+    required_notes = parse_ratios(args.include) if args.include else []
+    excluded_notes = parse_ratios(args.exclude) if args.exclude else []
+    
     config = SearchConfig(
         max_notes=args.max_notes,
         min_notes=args.min_notes,
@@ -1831,6 +2402,8 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
         initial_temp=args.temp,
         octave_range=args.octaves,
         edo=edo,
+        required_notes=required_notes,
+        excluded_notes=excluded_notes,
     )
     
     # Load seed scales if specified

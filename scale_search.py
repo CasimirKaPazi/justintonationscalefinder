@@ -1,7 +1,20 @@
 #!/usr/bin/env python3
 """
-Evolutionary search for consonant just intonation scales.
-Uses Tenney height (log2(n*d) for ratio n/d) as consonance metric.
+Just Intonation Scale Search
+Evolutionary optimization of microtonal scales using multiple consonance metrics.
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
 """
 
 import random
@@ -424,6 +437,177 @@ def prime_limit_penalty(ratio: Fraction) -> float:
     return math.sqrt(tenney_height(ratio))
 
 
+def odd_limit(ratio: Fraction) -> float:
+    """
+    Odd-limit: the largest odd number in the ratio after removing factors of 2.
+    
+    Many theorists consider this more musically relevant than prime limit.
+    For example:
+    - 9/8 has odd-limit 9 (despite being 3-limit in terms of primes)
+    - 5/4 has odd-limit 5
+    - 3/2 has odd-limit 3
+    - 15/8 has odd-limit 15
+    
+    Returns log2 of the odd-limit for better scaling with other metrics.
+    """
+    n, d = ratio.numerator, ratio.denominator
+    
+    # Remove factors of 2
+    while n % 2 == 0:
+        n //= 2
+    while d % 2 == 0:
+        d //= 2
+    
+    # The odd-limit is the larger of the two
+    limit = max(n, d)
+    
+    # Return log2 for scaling (1->0, 3->1.58, 5->2.32, 7->2.81, 9->3.17, 15->3.91)
+    return math.log2(limit) if limit > 0 else 0
+
+
+def barlow_harmonicity(ratio: Fraction) -> float:
+    """
+    Clarence Barlow's indigestibility/harmonicity measure.
+    
+    Barlow's formula weights primes by 2*(p-1)^2/p, then sums for all prime factors.
+    Lower values = more consonant.
+    
+    This gives different results than Tenney:
+    - Penalizes prime 3 less than Tenney does relative to 2
+    - Penalizes higher primes (7, 11, 13) more gradually
+    
+    Widely used in computer-assisted composition and microtonal theory.
+    """
+    def indigestibility(n):
+        """Barlow's indigestibility of an integer."""
+        if n <= 1:
+            return 0
+        
+        result = 0
+        temp = n
+        p = 2
+        while p * p <= temp:
+            while temp % p == 0:
+                # Each prime factor p contributes 2*(p-1)^2/p
+                result += 2 * (p - 1) ** 2 / p
+                temp //= p
+            p += 1
+        if temp > 1:
+            # Remaining prime factor
+            result += 2 * (temp - 1) ** 2 / temp
+        
+        return result
+    
+    return indigestibility(ratio.numerator) + indigestibility(ratio.denominator)
+
+
+def scale_balance(scale: List[Fraction]) -> float:
+    """
+    Measure how evenly distributed notes are across the octave.
+    
+    Uses coefficient of variation (std dev / mean) of step sizes.
+    Returns 0 for perfectly even scales, higher values for uneven scales.
+    
+    This is an alternative to step_size_penalty that measures overall
+    distribution rather than just penalizing close notes.
+    
+    Examples:
+    - 12-EDO: balance = 0 (all steps equal)
+    - Major scale: balance ≈ 0.33 (mix of whole and half steps)
+    - Pentatonic: balance ≈ 0.22 (fairly even)
+    """
+    if len(scale) < 1:
+        return 0.0
+    
+    # Get all notes including implicit 1/1 and 2/1
+    full_scale = [Fraction(1, 1)] + sorted(scale) + [Fraction(2, 1)]
+    
+    # Calculate step sizes in cents
+    steps = []
+    for i in range(len(full_scale) - 1):
+        interval = full_scale[i + 1] / full_scale[i]
+        cents = 1200 * math.log2(float(interval))
+        steps.append(cents)
+    
+    if len(steps) < 2:
+        return 0.0
+    
+    mean_step = sum(steps) / len(steps)
+    if mean_step == 0:
+        return 0.0
+    
+    variance = sum((s - mean_step) ** 2 for s in steps) / len(steps)
+    std_dev = math.sqrt(variance)
+    
+    # Coefficient of variation (normalized std dev)
+    return std_dev / mean_step
+
+
+def scale_propriety(scale: List[Fraction]) -> float:
+    """
+    Rothenberg propriety: measures whether larger scale steps span larger intervals.
+    
+    A scale is "strictly proper" if every interval of n steps is smaller than
+    every interval of n+1 steps. It's "proper" if they're non-overlapping.
+    "Improper" scales have overlapping interval classes.
+    
+    Returns a penalty where:
+    - 0 = strictly proper (ideal)
+    - Small values = mostly proper with few ambiguities
+    - Large values = highly improper
+    
+    Many common scales (major, pentatonic) are proper or strictly proper.
+    Improper scales can feel unstable or ambiguous.
+    """
+    if len(scale) < 2:
+        return 0.0
+    
+    # Full scale with 1/1 and 2/1
+    full_scale = [Fraction(1, 1)] + sorted(scale) + [Fraction(2, 1)]
+    n = len(full_scale) - 1  # Number of scale degrees (not counting octave)
+    
+    # Calculate all intervals by step count
+    # intervals_by_steps[k] = list of interval sizes (in cents) spanning k steps
+    intervals_by_steps = {}
+    
+    for i in range(len(full_scale) - 1):
+        for j in range(i + 1, len(full_scale)):
+            steps = j - i
+            interval = full_scale[j] / full_scale[i]
+            # Don't octave reduce - we want actual interval sizes within the octave
+            cents = 1200 * math.log2(float(interval))
+            
+            if steps not in intervals_by_steps:
+                intervals_by_steps[steps] = []
+            intervals_by_steps[steps].append(cents)
+    
+    # Check for propriety violations
+    # Compare max of k-step intervals with min of (k+1)-step intervals
+    violations = 0.0
+    total_comparisons = 0
+    
+    step_counts = sorted(intervals_by_steps.keys())
+    for i in range(len(step_counts) - 1):
+        k = step_counts[i]
+        k_next = step_counts[i + 1]
+        
+        if k_next != k + 1:
+            continue  # Skip if not consecutive step classes
+        
+        max_k = max(intervals_by_steps[k])
+        min_k_next = min(intervals_by_steps[k_next])
+        
+        total_comparisons += 1
+        
+        # Violation if max of smaller step class >= min of larger step class
+        if max_k >= min_k_next:
+            # Degree of violation (how much overlap in cents, normalized)
+            overlap = (max_k - min_k_next) / 100  # Normalize by ~semitone
+            violations += overlap
+    
+    return violations / total_comparisons if total_comparisons > 0 else 0.0
+
+
 CONSONANCE_METRICS = {
     'tenney': (tenney_height, "Tenney height: log2(n*d)"),
     'euler': (euler_gradus, "Euler's Gradus Suavitatis"),
@@ -431,6 +615,8 @@ CONSONANCE_METRICS = {
     'roughness': (plomp_levelt_roughness, "Plomp-Levelt roughness model"),
     'wilson': (wilson_complexity, "Wilson harmonic complexity"),
     'soft_tenney': (prime_limit_penalty, "Softened Tenney (sqrt) - less harsh on higher primes"),
+    'odd_limit': (odd_limit, "Odd-limit: largest odd factor (log2)"),
+    'barlow': (barlow_harmonicity, "Barlow harmonicity/indigestibility"),
 }
 
 # Scale-level metrics (operate on whole scale, not individual intervals)
@@ -438,6 +624,8 @@ CONSONANCE_METRICS = {
 SCALE_METRICS = {
     'steps': (step_size_penalty, "Step size penalty (penalizes clustered notes)"),
     'primes': (prime_diversity_score, "Prime diversity (penalizes lack of 7/11/13-limit)"),
+    'balance': (scale_balance, "Step size balance (coefficient of variation)"),
+    'propriety': (scale_propriety, "Rothenberg propriety (penalizes improper scales)"),
     # 'edoN' handled specially in parse_metrics - generates neji scales
 }
 
@@ -450,8 +638,12 @@ METRIC_NORMALIZATION = {
     'roughness': (0.0, 1.5),    # smooth to rough
     'wilson': (0.0, 12.0),      # simple to complex
     'soft_tenney': (1.0, 3.5),  # sqrt of tenney range
+    'odd_limit': (0.0, 4.0),    # log2(1) to log2(15)
+    'barlow': (0.0, 20.0),      # simple to complex (similar range to euler)
     'steps': (0.0, 0.5),        # 0 = no close steps, 0.5 = very clustered
     'primes': (0.0, 0.5),       # sum(1/p): 0=5-limit, 0.31=13-limit, 0.42=19-limit
+    'balance': (0.0, 1.0),      # 0 = even steps, 1 = very uneven
+    'propriety': (0.0, 1.0),    # 0 = proper, higher = more improper
     'edo': (0.0, 1.0),          # 0 = on EDO steps, 1 = at midpoints
 }
 
@@ -908,12 +1100,12 @@ def create_random_scale(candidates: List[Fraction], num_ratios: int,
     return selected
 
 
-def load_seed_scales(filepath: str) -> List[List[Fraction]]:
+def load_seed_scales(filepath: str, with_names: bool = False):
     """
     Load seed scales from a file. Supports both simple format and Scala .scl format.
     
     Comment styles:
-    - Lines starting with # are comments
+    - Lines starting with # are comments (can be used as scale names)
     - Lines starting with ! are comments (Scala format)
     - Blank lines separate scales (in simple format)
     
@@ -960,34 +1152,63 @@ def load_seed_scales(filepath: str) -> List[List[Fraction]]:
         9/5
         2
     
-    Returns a list of scales, where each scale is a list of Fractions (all 1 < r < 2).
+    Args:
+        filepath: Path to seed file
+        with_names: If True, return (scales, names) tuple
+    
+    Returns:
+        If with_names=False: List of scales (each scale is a list of Fractions)
+        If with_names=True: Tuple of (scales, names) where names[i] is name for scales[i] or None
     """
     scales = []
+    names = []
     current_scale = []
+    current_name = None
     
     try:
         with open(filepath, 'r') as f:
             for line in f:
                 line = line.strip()
                 
-                # Skip comments (# or !) and blank lines
-                if line.startswith('#') or line.startswith('!') or not line:
-                    # Blank line or comment - if we have a current scale, save it
-                    if current_scale and not line.startswith('!'):
-                        # Only save on blank lines or # comments, not ! comments
-                        # (Scala format uses ! for inline comments within a scale)
-                        if not line or line.startswith('#'):
-                            # Remove trailing 2/1 if present (it's implicit)
-                            if current_scale[-1] == Fraction(2, 1):
-                                current_scale = current_scale[:-1]
+                # Handle comments and blank lines
+                if line.startswith('#'):
+                    # Save current scale if we have one
+                    if current_scale:
+                        if current_scale[-1] == Fraction(2, 1):
+                            current_scale = current_scale[:-1]
+                        if current_scale:
+                            current_scale = sanitize_scale(current_scale)
                             if current_scale:
                                 scales.append(current_scale)
-                            current_scale = []
+                                names.append(current_name)
+                        current_scale = []
+                    # Extract name from comment (strip # and whitespace)
+                    current_name = line[1:].strip() or None
                     continue
                 
-                # Skip lines that look like Scala metadata (note count, description)
-                # These are typically just numbers (note count) or text without /
-                # But we need to catch "2" as a ratio, so check if it could be a ratio
+                if line.startswith('!'):
+                    # Scala comment - could be filename which serves as name
+                    if current_name is None and '.scl' in line.lower():
+                        # Extract name from "! filename.scl"
+                        name = line[1:].strip()
+                        if name.lower().endswith('.scl'):
+                            name = name[:-4]
+                        current_name = name or None
+                    continue
+                
+                if not line:
+                    # Blank line - save current scale
+                    if current_scale:
+                        if current_scale[-1] == Fraction(2, 1):
+                            current_scale = current_scale[:-1]
+                        if current_scale:
+                            current_scale = sanitize_scale(current_scale)
+                            if current_scale:
+                                scales.append(current_scale)
+                                names.append(current_name)
+                        current_scale = []
+                        current_name = None
+                    continue
                 
                 # Skip cents values (contain decimal point)
                 if '.' in line:
@@ -1010,42 +1231,64 @@ def load_seed_scales(filepath: str) -> List[List[Fraction]]:
                                     current_scale.append(ratio)
                     else:
                         # Could be integer like "2" meaning 2/1
-                        # But also could be Scala note count line
-                        # Heuristic: if we already have notes, or it's a small int that makes sense as ratio
                         val = int(line)
                         if val >= 2 and (current_scale or val <= 4):
-                            # Likely a ratio like 2, 3, 4 (meaning 2/1, 3/1, 4/1)
                             ratio = Fraction(val, 1)
-                            # Reduce to octave
                             while ratio >= 2:
                                 ratio = ratio / 2
                             if ratio > 1:
                                 current_scale.append(ratio)
-                        # Otherwise skip (likely note count metadata)
                 except (ValueError, ZeroDivisionError):
-                    # Skip malformed lines (likely description text)
                     pass
             
             # Don't forget the last scale
             if current_scale:
-                # Remove trailing 2/1 if present
                 if current_scale[-1] == Fraction(2, 1):
                     current_scale = current_scale[:-1]
                 if current_scale:
-                    # Sanitize to remove duplicates and sort
                     current_scale = sanitize_scale(current_scale)
                     if current_scale:
                         scales.append(current_scale)
+                        names.append(current_name)
     
     except FileNotFoundError:
         print(f"Warning: Seed file '{filepath}' not found.")
+        if with_names:
+            return [], []
         return []
     except Exception as e:
         print(f"Warning: Error reading seed file '{filepath}': {e}")
+        if with_names:
+            return [], []
         return []
     
-    # Also sanitize the final scale list (removes duplicates between scales)
-    return [sanitize_scale(s) for s in scales if s]
+    if with_names:
+        return scales, names
+    return scales
+
+
+def find_matching_seed(scale: List[Fraction], seed_scales: List[List[Fraction]], 
+                       seed_names: List[str] = None) -> Tuple[int, str]:
+    """
+    Check if a scale matches any seed scale.
+    
+    Args:
+        scale: The scale to check
+        seed_scales: List of seed scales
+        seed_names: Optional list of names corresponding to seed_scales
+    
+    Returns:
+        (index, name) if match found, (-1, None) otherwise
+    """
+    scale_set = frozenset((r.numerator, r.denominator) for r in scale)
+    
+    for i, seed in enumerate(seed_scales):
+        seed_set = frozenset((r.numerator, r.denominator) for r in seed)
+        if scale_set == seed_set:
+            name = seed_names[i] if seed_names and i < len(seed_names) else None
+            return i, name
+    
+    return -1, None
 
 
 def reduce_to_octave(ratio: Fraction) -> Fraction:
@@ -2406,10 +2649,11 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
         excluded_notes=excluded_notes,
     )
     
-    # Load seed scales if specified
+    # Load seed scales if specified (with names for matching)
     seed_scales = None
+    seed_names = None
     if args.seeds:
-        seed_scales = load_seed_scales(args.seeds)
+        seed_scales, seed_names = load_seed_scales(args.seeds, with_names=True)
         if seed_scales:
             print(f"Loaded {len(seed_scales)} seed scales from {args.seeds}")
     
@@ -2465,6 +2709,17 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
     print("--- Details ---")
     print(format_scale(scale, verbose=True))
     print()
+    
+    # Check if this scale matches a seed
+    if seed_scales:
+        match_idx, match_name = find_matching_seed(scale, seed_scales, seed_names)
+        if match_idx >= 0:
+            if match_name:
+                print(f"*** This scale matches seed #{match_idx + 1}: {match_name} ***")
+            else:
+                print(f"*** This scale matches seed #{match_idx + 1} ***")
+            print()
+    
     print(f"Metric: {metric_desc}")
     print(f"Intervals evaluated: {details['num_intervals']} (across {octave_desc})")
     print(f"Quality (0-1, higher=better): {details['quality']:.4f}")

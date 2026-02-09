@@ -124,4 +124,8 @@ Including and excluding notes can be used to steer the result towards an intende
 
 GPL-3.0
 
-Created with Claude (Anthropic)
+## Development
+
+This was created with Claude (Anthropic).
+
+I won't develop it further and won't merge pull requests, just because I don't want the work of maintaining this project. If you want to contribute, then just fork the repo and publish your changes.

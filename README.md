@@ -64,8 +64,9 @@ python scale_search.py --metric "euler:1,wilson:1,odd_limit:1,propriety:1,barlow
 | `steps` | Penalizes clustered notes (obsolete, better use balance) |
 | `balance` | Step size evenness (coefficient of variation) |
 | `propriety` | Rothenberg propriety (interval class overlap) |
-| `primes` | Rewards prime diversity (7/11/13-limit) |
-| `edo12` | Proximity to 12-EDO (for neji scales) |
+| `primes` | Rewards prime diversity (better use variety) |
+| `variety` | Interval variety |
+| `edoN` | Proximity to N-EDO (for neji scales), e.g. `edo12` |
 
 ## Interval Combination Methods
 
@@ -124,17 +125,13 @@ The tool outputs:
 
 ## Tips
 
-Increasing *min_notes*, *ratio_limit*, *octaves* and *generations* slow down search quite a lot.
-
-The *entropy* and *roughness* metrics are also slow, and usually you don't need more than one of those two, as they are quite similar.
-
-Using *entropy* or *roughness* also tends to cluster the notes in a few places. To balance this out you can use *balance*. But I recommend starting with a low value (e.g. balance:0.05) and increase when needed.
-
-Using the *primes* metric can lead to more interesting scales, but is better used with low weight (e.g. primes:0.3).
-
-Below 7 notes, most combinations of metrics converge on the same scales.
-
-Including and excluding notes can be used to steer the result towards an intended flavor.
+- Increasing `min_notes`, `ratio_limit`, `octaves` and `generations` slow down search quite a lot.
+- The `entropy` and `roughness` metrics are also slow, and usually you don't need more than one of those two, as they are quite similar.
+- Using `entropy` or `roughness` also tends to cluster the notes in a few places. To balance this out you can use `balance`. But I recommend starting with a low value (e.g. `balance:0.05`) and increase when needed.
+- Using the `primes` metric can lead to more interesting scales, but is better used with low weight (e.g. `primes:0.3`). Even better to use `variety`.
+- Below 7 notes, most combinations of metrics converge on the same scales.
+- Including and excluding notes can be used to steer the result towards an intended flavor.
+- Metric can also be used with negative value.
 
 ## License
 

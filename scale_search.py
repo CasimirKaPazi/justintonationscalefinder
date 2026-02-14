@@ -613,6 +613,67 @@ def scale_propriety(scale: List[Fraction]) -> float:
     return violations / total_comparisons if total_comparisons > 0 else 0.0
 
 
+def scale_variety(scale: List[Fraction]) -> float:
+    """
+    Measure interval variety using soft clustering via Gaussian kernel.
+    
+    For each pair of intervals, computes similarity = exp(-d²/2σ²) where d is
+    the distance in cents. Sums all similarities - lower sum means intervals
+    are more spread out (higher variety).
+    
+    Returns 1 - (total_similarity / max_possible_similarity).
+    
+    The kernel width σ = 10 cents is motivated by the Just Noticeable Difference
+    (JND) for melodic pitch - intervals within ~10 cents are perceptually similar.
+    
+    This is smooth and principled:
+    - 3/2 (702¢) and 301/200 (707¢) contribute high similarity (low variety)
+    - 3/2 (702¢) and 7/5 (583¢) contribute negligible similarity (high variety)
+    - No hard thresholds - similarity falls off smoothly with distance
+    
+    Examples:
+    - Hexany: ~0.98 (all intervals perceptually distinct)
+    - Major scale: ~0.95 (some intervals cluster, e.g. multiple ~200¢)
+    """
+    if len(scale) < 1:
+        return 1.0
+    
+    # Full scale with 1/1 and 2/1
+    full_scale = [Fraction(1, 1)] + sorted(scale) + [Fraction(2, 1)]
+    
+    # Collect all intervals in cents (octave-reduced)
+    interval_cents = []
+    for i in range(len(full_scale)):
+        for j in range(i + 1, len(full_scale)):
+            interval = full_scale[j] / full_scale[i]
+            # Octave reduce
+            while interval >= 2:
+                interval = interval / 2
+            cents = 1200 * math.log2(float(interval)) if interval > 1 else 0
+            interval_cents.append(cents)
+    
+    n = len(interval_cents)
+    if n < 2:
+        return 1.0
+    
+    # Gaussian kernel width based on JND (~10 cents)
+    sigma = 10.0
+    
+    # Sum pairwise similarities
+    total_similarity = 0.0
+    for i in range(n):
+        for j in range(i + 1, n):
+            dist = abs(interval_cents[i] - interval_cents[j])
+            similarity = math.exp(-dist * dist / (2 * sigma * sigma))
+            total_similarity += similarity
+    
+    # Maximum similarity if all intervals identical
+    max_similarity = n * (n - 1) / 2
+    
+    # Variety = 1 - normalized similarity
+    return 1.0 - (total_similarity / max_similarity)
+
+
 CONSONANCE_METRICS = {
     'tenney': (tenney_height, "Tenney height: log2(n*d)"),
     'euler': (euler_gradus, "Euler's Gradus Suavitatis"),
@@ -631,6 +692,7 @@ SCALE_METRICS = {
     'primes': (prime_diversity_score, "Prime diversity (penalizes lack of 7/11/13-limit)"),
     'balance': (scale_balance, "Step size balance (coefficient of variation)"),
     'propriety': (scale_propriety, "Rothenberg propriety (penalizes improper scales)"),
+    'variety': (scale_variety, "Interval variety (unique intervals / total, like Hexany)"),
     # 'edoN' handled specially in parse_metrics - generates neji scales
 }
 
@@ -649,6 +711,7 @@ METRIC_NORMALIZATION = {
     'primes': (0.0, 0.5),       # sum(1/p): 0=5-limit, 0.31=13-limit, 0.42=19-limit
     'balance': (0.0, 1.0),      # 0 = even steps, 1 = very uneven
     'propriety': (0.0, 1.0),    # 0 = proper, higher = more improper
+    'variety': (0.0, 1.0),      # 0 = all same interval, 1 = all unique (Hexany-like)
     'edo': (0.0, 1.0),          # 0 = on EDO steps, 1 = at midpoints
 }
 
@@ -1028,10 +1091,10 @@ def evaluate_scale(scale: List[Fraction],
         norm_score = max(0.0, min(1.0, norm_score))
         
         # Convert to quality (higher = better)
-        # 'primes' is already positive (more diversity = better)
-        # 'steps' and 'edo' are penalties (lower = better), so invert
-        if metric_name == 'primes':
-            quality = norm_score  # Already: higher diversity = higher quality
+        # 'primes' and 'variety' are already positive (more = better)
+        # 'steps', 'balance', 'propriety', 'edo' are penalties (lower = better), so invert
+        if metric_name in ('primes', 'variety'):
+            quality = norm_score  # Already: higher = higher quality
         else:
             quality = 1.0 - norm_score  # Invert penalties
         

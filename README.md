@@ -6,6 +6,7 @@ Evolutionary search for microtonal scales using multiple consonance metrics.
 
 - **Multiple consonance metrics**: Tenney height, Euler gradus, harmonic entropy, Plomp-Levelt roughness, Wilson complexity, Barlow harmonicity, odd-limit
 - **Scale-level metrics**: Step balance, Rothenberg propriety, prime diversity, EDO approximation
+- **Interval combination methods**: Geometric mean (default), worst-case, arithmetic mean
 - **Evolutionary optimization**: Genetic algorithm with simulated annealing, adaptive mutation, and fingerprint-based diversity
 - **Flexible constraints**: Required/excluded notes, variable note counts, ratio complexity limits
 - **Seed scales**: Initialize from existing scales (Scala .scl format supported)
@@ -60,11 +61,24 @@ python scale_search.py --metric "euler:1,wilson:1,odd_limit:1,propriety:1,barlow
 ### Scale Metrics
 | Metric | Description |
 |--------|-------------|
-| `steps` | Penalizes clustered notes |
+| `steps` | Penalizes clustered notes (obsolete, better use balance) |
 | `balance` | Step size evenness (coefficient of variation) |
 | `propriety` | Rothenberg propriety (interval class overlap) |
 | `primes` | Rewards prime diversity (7/11/13-limit) |
 | `edo12` | Proximity to 12-EDO (for neji scales) |
+
+## Interval Combination Methods
+
+The `--combine` option controls how individual interval scores are combined (in order of strictness):
+
+| Method | Description |
+|--------|-------------|
+| `mean` | Arithmetic mean. Bad intervals can be averaged out by good ones. Most lenient. |
+| `geometric` | Geometric mean (default). One bad interval pulls down the whole score. Best for ensuring all intervals work together. |
+| `power2` | Power mean (p=2, RMS). Emphasizes bad intervals more than arithmetic mean. |
+| `power3` | Power mean (p=3). Even stricter than p=2. |
+| `logloss` | Log loss. Heavily penalizes near-dissonant intervals — a 0.9 penalty hurts much more than two 0.45s. |
+| `worst` | Minimax. Optimizes the worst interval. Most demanding — no bad intervals tolerated. |
 
 ## Seed File Format
 
@@ -110,11 +124,13 @@ The tool outputs:
 
 ## Tips
 
-Increasing *min_notes*, *ratio_limit*, *octaves* and *generations* slow down search qutie a lot.
+Increasing *min_notes*, *ratio_limit*, *octaves* and *generations* slow down search quite a lot.
 
 The *entropy* and *roughness* metrics are also slow, and usually you don't need more than one of those two, as they are quite similar.
 
-Using the *primes* metric can lead to more interestig scales, but is better used with low weight (e.g. primes:0.3).
+Using *entropy* or *roughness* also tends to cluster the notes in a few places. To balance this out you can use *balance*. But I recommend starting with a low value (e.g. balance:0.05) and increase when needed.
+
+Using the *primes* metric can lead to more interesting scales, but is better used with low weight (e.g. primes:0.3).
 
 Below 7 notes, most combinations of metrics converge on the same scales.
 

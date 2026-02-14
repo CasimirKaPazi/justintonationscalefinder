@@ -3,6 +3,8 @@
 Just Intonation Scale Search
 Evolutionary optimization of microtonal scales using multiple consonance metrics.
 
+Copyright (C) 2025
+
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
@@ -46,6 +48,7 @@ class SearchConfig:
         initial_temp: 0.1
         final_temp: 0.001
         octave_range: 1 (evaluate across 3 octaves)
+        combine_method: 'geometric' (how to combine interval scores)
     """
     max_notes: int = 7          # Maximum notes in scale (including octave)
     min_notes: int = 3          # Minimum notes in scale (including octave)
@@ -70,6 +73,8 @@ class SearchConfig:
     # Note constraints
     required_notes: List[Fraction] = None  # Notes that must be in every scale
     excluded_notes: List[Fraction] = None  # Notes that must not appear
+    # Interval combination method
+    combine_method: str = 'geometric'  # 'geometric', 'worst', or 'mean'
     
     def __post_init__(self):
         if self.metrics is None:
@@ -846,7 +851,8 @@ def evaluate_scale(scale: List[Fraction],
                    octave_range: int = 1,
                    interval_cache: dict = None,
                    scale_metrics: List[Tuple[str, float]] = None,
-                   edo: int = 0) -> Tuple[float, dict]:
+                   edo: int = 0,
+                   combine_method: str = 'geometric') -> Tuple[float, dict]:
     """
     Evaluate a scale's quality using the specified metric(s).
     Returns (fitness, details) where higher fitness = better scale.
@@ -856,6 +862,10 @@ def evaluate_scale(scale: List[Fraction],
     octave_range: How many octaves above/below to consider
     interval_cache: Optional precomputed {(n,d): score} lookup for fast evaluation
     edo: If > 0, penalize notes far from this EDO's steps (for neji scales)
+    combine_method: How to combine interval scores:
+        'geometric' - geometric mean (default): one bad interval pulls down the whole score
+        'worst' - minimax: optimize the worst interval (most demanding)
+        'mean' - arithmetic mean: bad intervals can be averaged out
     
     All metrics are converted to quality scores (0-1, higher = better):
     - Interval metrics (tenney, etc.): quality = 1 - normalized_dissonance
@@ -942,8 +952,45 @@ def evaluate_scale(scale: List[Fraction],
                 for name, _ in metrics:
                     individual_scores[name].append(cached_metric(interval, name))
     
-    # Base score from intervals (this is a penalty: 0-1, lower = better)
-    raw_interval_penalty = sum(interval_scores) / len(interval_scores) if interval_scores else 0
+    # Combine interval scores using specified method
+    # interval_scores are penalties (0-1, lower = better)
+    if not interval_scores:
+        raw_interval_penalty = 0
+    elif combine_method == 'worst':
+        # Minimax: the worst interval determines the score
+        raw_interval_penalty = max(interval_scores)
+    elif combine_method == 'geometric':
+        # Geometric mean: one bad interval pulls down the whole score
+        # For penalties, we compute geometric mean directly
+        # Clamp to avoid log(0)
+        clamped = [max(0.001, min(0.999, s)) for s in interval_scores]
+        log_sum = sum(math.log(s) for s in clamped)
+        raw_interval_penalty = math.exp(log_sum / len(clamped))
+    elif combine_method.startswith('power'):
+        # Power mean: (1/n * Σ x^p)^(1/p)
+        # Higher p emphasizes worse (higher) penalties more
+        # p=1 is arithmetic mean, p=2 is RMS, p→∞ approaches max
+        try:
+            p = int(combine_method[5:]) if len(combine_method) > 5 else 2
+        except ValueError:
+            p = 2
+        p = max(1, min(10, p))  # Clamp to reasonable range
+        # Clamp scores to avoid issues with very small values
+        clamped = [max(0.001, s) for s in interval_scores]
+        power_sum = sum(s ** p for s in clamped)
+        raw_interval_penalty = (power_sum / len(clamped)) ** (1 / p)
+    elif combine_method == 'logloss':
+        # Log loss: heavily penalizes near-dissonant intervals
+        # -log(1-p) grows unboundedly as p→1
+        # We compute mean log loss then squash back to [0,1)
+        # Clamp away from 1 to avoid log(0)
+        clamped = [min(0.999, s) for s in interval_scores]
+        log_loss_raw = sum(-math.log(1 - s) for s in clamped) / len(clamped)
+        # Squash to [0,1): penalty = 1 - exp(-log_loss)
+        raw_interval_penalty = 1 - math.exp(-log_loss_raw)
+    else:  # 'mean' or default
+        # Arithmetic mean: bad intervals can be averaged out
+        raw_interval_penalty = sum(interval_scores) / len(interval_scores)
     
     # Normalize for note count: more notes naturally have higher average scores
     num_notes = len(scale) + 1  # +1 for 1/1 (2/1 is octave, not separately counted)
@@ -2073,6 +2120,7 @@ def evolve(config: SearchConfig, verbose: bool = True,
     scale_metrics = config.scale_metrics
     octave_range = config.octave_range
     edo = config.edo
+    combine_method = config.combine_method
     
     # Pre-compute cents for all candidates (for fast neighbor lookups)
     # Store as list of (cents, index) sorted by cents
@@ -2127,7 +2175,7 @@ def evolve(config: SearchConfig, verbose: bool = True,
         """Evaluate scale and cache both fitness and fingerprint."""
         key = frozenset((r.numerator, r.denominator) for r in scale)
         if key not in scale_cache:
-            fitness, details = evaluate_scale(scale, metrics, octave_range, interval_cache, scale_metrics, edo)
+            fitness, details = evaluate_scale(scale, metrics, octave_range, interval_cache, scale_metrics, edo, combine_method)
             scale_cache[key] = fitness
             fingerprint_cache[key] = scale_fingerprint(details)
         return scale_cache[key]
@@ -2406,7 +2454,7 @@ def evolve(config: SearchConfig, verbose: bool = True,
     
     # Return best found
     best_fitness, best_scale = best_ever
-    _, details = evaluate_scale(best_scale, metrics, octave_range, interval_cache, scale_metrics, edo)
+    _, details = evaluate_scale(best_scale, metrics, octave_range, interval_cache, scale_metrics, edo, combine_method)
     return sorted(best_scale), best_fitness, details
 
 
@@ -2455,7 +2503,7 @@ def print_interval_matrix(scale: List[Fraction], metrics: List[Tuple[str, float]
 
 def evaluate_named_scale(name: str, ratios: List[str], metrics: List[Tuple[str, float]] = None,
                          octave_range: int = 1, scale_metrics: List[Tuple[str, float]] = None,
-                         edo: int = 0):
+                         edo: int = 0, combine_method: str = 'geometric'):
     """Evaluate and display a specific scale given as string ratios."""
     if metrics is None:
         metrics = [('tenney', 1.0)]
@@ -2463,7 +2511,7 @@ def evaluate_named_scale(name: str, ratios: List[str], metrics: List[Tuple[str, 
         scale_metrics = []
     
     scale = [Fraction(r) for r in ratios if r != "2/1"]
-    fitness, details = evaluate_scale(scale, metrics, octave_range, None, scale_metrics, edo)
+    fitness, details = evaluate_scale(scale, metrics, octave_range, None, scale_metrics, edo, combine_method)
     
     # Build metric description
     if len(metrics) == 1:
@@ -2584,6 +2632,8 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
                         help="Required notes (comma-separated ratios, e.g., '3/2,5/4')")
     parser.add_argument("--exclude", type=str, default=None,
                         help="Excluded notes (comma-separated ratios, e.g., '7/4,11/8')")
+    parser.add_argument("--combine", type=str, default='geometric',
+                        help="How to combine interval scores: geometric (default), worst, mean, power2, power3, logloss")
     parser.add_argument("--compare", action="store_true", 
                         help="Compare known scales instead of searching")
     parser.add_argument("--list-metrics", action="store_true", 
@@ -2647,6 +2697,7 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
         edo=edo,
         required_notes=required_notes,
         excluded_notes=excluded_notes,
+        combine_method=args.combine,
     )
     
     # Load seed scales if specified (with names for matching)
@@ -2676,6 +2727,22 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
     note_desc = f"exactly {config.fixed_notes}" if config.fixed_notes else f"{config.min_notes}-{config.max_notes}"
     octave_desc = f"{2 * config.octave_range + 1} octaves" if config.octave_range > 0 else "1 octave"
     
+    # Build combine method description
+    combine_desc_map = {
+        'geometric': 'geometric mean', 
+        'worst': 'worst interval', 
+        'mean': 'arithmetic mean',
+        'logloss': 'log loss (heavily penalizes bad intervals)'
+    }
+    if config.combine_method.startswith('power'):
+        try:
+            p = int(config.combine_method[5:]) if len(config.combine_method) > 5 else 2
+        except ValueError:
+            p = 2
+        combine_desc_str = f'power mean (p={p})'
+    else:
+        combine_desc_str = combine_desc_map.get(config.combine_method, config.combine_method)
+    
     print("=" * 60)
     print("Just Intonation Scale Search")
     print("=" * 60)
@@ -2683,6 +2750,7 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
     print(f"Ratio limit: {config.ratio_limit}")
     print(f"Octave range: {octave_desc}")
     print(f"Metric: {metric_desc}")
+    print(f"Interval combination: {combine_desc_str}")
     print(f"Generations: {config.generations}")
     print("=" * 60)
     print()

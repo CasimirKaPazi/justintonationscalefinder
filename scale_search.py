@@ -64,8 +64,6 @@ class SearchConfig:
     # Simulated annealing parameters
     initial_temp: float = 0.1   # Starting temperature (higher = more exploration)
     final_temp: float = 0.001   # Ending temperature
-    # Deprecated - no longer used (diversity maintained via randomized elite selection)
-    diversity_weight: float = 0.1
     # Multi-octave evaluation
     octave_range: int = 1       # Octaves above/below to consider (0=single, 1=3 total, 2=5 total)
     # EDO approximation (for neji scales)
@@ -692,7 +690,7 @@ SCALE_METRICS = {
     'primes': (prime_diversity_score, "Prime diversity (penalizes lack of 7/11/13-limit)"),
     'balance': (scale_balance, "Step size balance (coefficient of variation)"),
     'propriety': (scale_propriety, "Rothenberg propriety (penalizes improper scales)"),
-    'variety': (scale_variety, "Interval variety (unique intervals / total, like Hexany)"),
+    'variety': (scale_variety, "Interval variety (perceptually distinct intervals)"),
     # 'edoN' handled specially in parse_metrics - generates neji scales
 }
 
@@ -711,7 +709,7 @@ METRIC_NORMALIZATION = {
     'primes': (0.0, 0.5),       # sum(1/p): 0=5-limit, 0.31=13-limit, 0.42=19-limit
     'balance': (0.0, 1.0),      # 0 = even steps, 1 = very uneven
     'propriety': (0.0, 1.0),    # 0 = proper, higher = more improper
-    'variety': (0.0, 1.0),      # 0 = all same interval, 1 = all unique (Hexany-like)
+    'variety': (0.0, 1.0),      # 0 = all intervals cluster, 1 = all perceptually distinct
     'edo': (0.0, 1.0),          # 0 = on EDO steps, 1 = at midpoints
 }
 
@@ -920,26 +918,21 @@ def evaluate_scale(scale: List[Fraction],
     Evaluate a scale's quality using the specified metric(s).
     Returns (fitness, details) where higher fitness = better scale.
     
-    metrics: List of (metric_name, weight) tuples for interval evaluation
-    scale_metrics: List of (metric_name, weight) tuples for whole-scale properties
-    octave_range: How many octaves above/below to consider
-    interval_cache: Optional precomputed {(n,d): score} lookup for fast evaluation
-    edo: If > 0, penalize notes far from this EDO's steps (for neji scales)
-    combine_method: How to combine interval scores:
-        'geometric' - geometric mean (default): one bad interval pulls down the whole score
-        'worst' - minimax: optimize the worst interval (most demanding)
-        'mean' - arithmetic mean: bad intervals can be averaged out
+    Args:
+        metrics: List of (metric_name, weight) tuples for interval evaluation
+        scale_metrics: List of (metric_name, weight) tuples for whole-scale properties
+        octave_range: How many octaves above/below to consider
+        interval_cache: Optional precomputed {(n,d): score} lookup for fast evaluation
+        edo: If > 0, penalize notes far from this EDO's steps (for neji scales)
+        combine_method: How to combine interval scores:
+            'geometric' - geometric mean (default): one bad interval pulls down score
+            'worst' - minimax: optimize the worst interval
+            'mean' - arithmetic mean: bad intervals can be averaged out
+            'power2', 'power3', etc. - power mean with given exponent
+            'logloss' - log loss: heavily penalizes near-dissonant intervals
     
-    All metrics are converted to quality scores (0-1, higher = better):
-    - Interval metrics (tenney, etc.): quality = 1 - normalized_dissonance
-    - primes: quality = normalized_diversity (already positive)
-    - steps: quality = 1 - normalized_clustering
-    - edo: quality = 1 - normalized_deviation
-    
-    Combination uses weighted geometric mean:
-    - All metrics must be good for a high score
-    - Can't compensate a bad metric with a good one
-    - Weights act as exponents: quality_i ^ weight_i
+    All metrics are converted to quality scores (0-1, higher = better).
+    Final score combines interval quality with scale metrics via weighted geometric mean.
     """
     if metrics is None:
         metrics = [('tenney', 1.0)]
@@ -2215,13 +2208,10 @@ def evolve(config: SearchConfig, verbose: bool = True,
     
     if verbose:
         print(f"Generated {len(candidates)} candidate ratios")
-        print(f"Searching for scales with {note_desc} notes")
         if required_notes:
             print(f"Required notes: {', '.join(str(r) for r in required_notes)}")
         if excluded_notes:
             print(f"Excluded notes: {', '.join(str(r) for r in excluded_notes)}")
-        print(f"Evaluating across {octave_desc}")
-        print(f"Using metric: {metric_desc}")
         print()
     
     # Lazy interval cache - compute on demand instead of precomputing all pairs
@@ -2355,11 +2345,11 @@ def evolve(config: SearchConfig, verbose: bool = True,
                 print(f"Gen {gen:4d}: reheating (stagnation={stagnation_counter}), temp -> {temperature:.4f}")
         
         # Early stopping if converged (but give more time)
-        if stagnation_counter > 40:
+        if stagnation_counter > 30:
             if verbose:
                 best_quality = best_ever[0]
                 num_intervals = sum(1 for k in interval_cache if isinstance(k, tuple) and len(k) == 2 and isinstance(k[0], int))
-                print(f"Gen {gen:4d}: converged (no improvement for 40 gens), best quality = {best_quality:.4f}, intervals = {num_intervals}")
+                print(f"Gen {gen:4d}: converged (no improvement for 30 gens), best quality = {best_quality:.4f}, intervals = {num_intervals}")
             break
         
         # Adaptive mutation rate (increase when stagnating)
@@ -2683,8 +2673,6 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
                         help="Number of independent runs (default: 1)")
     parser.add_argument("--metric", type=str, default='tenney', 
                         help="Metric(s) to use. Single: 'tenney'. Combined: 'tenney:1,roughness:0.5'")
-    parser.add_argument("--diversity", type=float, default=0.1, 
-                        help="(deprecated, ignored)")
     parser.add_argument("--temp", type=float, default=0.1, 
                         help="Initial SA temperature (default: 0.1, higher=more exploration)")
     parser.add_argument("--octaves", type=int, default=1, 
@@ -2738,7 +2726,7 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
         ]
         
         for name, ratios in scales_to_compare:
-            evaluate_named_scale(name, ratios, metrics, args.octaves, scale_metrics, edo)
+            evaluate_named_scale(name, ratios, metrics, args.octaves, scale_metrics, edo, args.combine)
         return
     
     # Parse required/excluded notes
@@ -2754,7 +2742,6 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
         population_size=args.population,
         metrics=metrics,
         scale_metrics=scale_metrics,
-        diversity_weight=args.diversity,
         initial_temp=args.temp,
         octave_range=args.octaves,
         edo=edo,
@@ -2832,41 +2819,56 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
     scale, fitness, details = best_overall
     
     print("\n" + "=" * 60)
-    print("BEST SCALE FOUND")
+    print("RESULTS")
     print("=" * 60)
-    print()
-    print(format_scale(scale))
-    print()
-    print("--- Details ---")
-    print(format_scale(scale, verbose=True))
-    print()
+    
+    # Summary
+    print(f"\nQuality: {details['quality']:.4f}")
+    print(f"Intervals evaluated: {details['num_intervals']} (across {octave_desc})")
     
     # Check if this scale matches a seed
     if seed_scales:
         match_idx, match_name = find_matching_seed(scale, seed_scales, seed_names)
         if match_idx >= 0:
             if match_name:
-                print(f"*** This scale matches seed #{match_idx + 1}: {match_name} ***")
+                print(f"Matches seed #{match_idx + 1}: {match_name}")
             else:
-                print(f"*** This scale matches seed #{match_idx + 1} ***")
-            print()
+                print(f"Matches seed #{match_idx + 1}")
     
-    print(f"Metric: {metric_desc}")
-    print(f"Intervals evaluated: {details['num_intervals']} (across {octave_desc})")
-    print(f"Quality (0-1, higher=better): {details['quality']:.4f}")
-    
-    # Show individual metric scores
-    if len(metrics) > 1:
-        print("\nIndividual metric averages:")
+    # Show individual metric scores (normalized to 0-1, as quality: higher=better)
+    if len(metrics) > 1 or scale_metrics:
+        print("\nMetric breakdown (0-1, higher=better):")
         for metric_name, weight in metrics:
-            _, desc = CONSONANCE_METRICS[metric_name]
-            avg = details['metric_averages'][metric_name]
-            print(f"  {metric_name}: {avg:.4f} (weight: {weight})")
+            raw = details['metric_averages'].get(metric_name, 0)
+            min_val, max_val = METRIC_NORMALIZATION.get(metric_name, (0, 1))
+            normalized = (raw - min_val) / (max_val - min_val)
+            normalized = max(0.0, min(1.0, normalized))
+            quality = 1.0 - normalized  # Invert: lower raw = higher quality
+            print(f"  {metric_name}: {quality:.3f} (weight {weight})")
+        
+        for metric_name, weight in scale_metrics:
+            raw = details['metric_averages'].get(metric_name, 0)
+            min_val, max_val = METRIC_NORMALIZATION.get(metric_name, (0, 1))
+            normalized = (raw - min_val) / (max_val - min_val)
+            normalized = max(0.0, min(1.0, normalized))
+            # 'primes' and 'variety' are positive (higher=better), others are penalties
+            if metric_name in ('primes', 'variety'):
+                quality = normalized
+            else:
+                quality = 1.0 - normalized
+            print(f"  {metric_name}: {quality:.3f} (weight {weight})")
     
-    print()
-    print("Interval Matrix (combined scores, single octave):")
+    # Interval matrix
+    print("\nInterval matrix (single octave):")
     print()
     print_interval_matrix(scale, metrics)
+    
+    # The scale itself - just ratios for easy copying
+    print("\n" + "=" * 60)
+    print("SCALE")
+    print("=" * 60)
+    print()
+    print(format_scale(scale))
 
 
 if __name__ == "__main__":

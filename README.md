@@ -111,6 +111,10 @@ Format:
 
 Scala .scl files are also supported.
 
+Scales that are outside of the specified note range get extended or trimmed. This way a e.g. 12 notes search can be informed by e.g. 5 note or 31 note scales.
+
+The file `seeds.txt` provides over 200 scales for up to 31 notes.
+
 ## Output
 
 The tool outputs:

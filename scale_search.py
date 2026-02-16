@@ -39,8 +39,8 @@ class SearchConfig:
     Defaults:
         max_notes: 7 (heptatonic)
         min_notes: 3 (minimum viable scale)
-        ratio_limit: 64
-        population_size: 300
+        ratio_limit: 32 (allows up to 31-limit intervals)
+        population_size: 200
         generations: 500
         mutation_rate: 0.3
         tournament_size: 5
@@ -53,8 +53,8 @@ class SearchConfig:
     max_notes: int = 7          # Maximum notes in scale (including octave)
     min_notes: int = 3          # Minimum notes in scale (including octave)
     fixed_notes: int = None     # If set, use exactly this many notes (including octave)
-    ratio_limit: int = 32       # Max numerator/denominator (32 allows up to 31-limit)
-    population_size: int = 200
+    ratio_limit: int = 64       # Max numerator/denominator (32 allows up to 31-limit)
+    population_size: int = 300
     generations: int = 500
     mutation_rate: float = 0.3
     tournament_size: int = 5
@@ -2258,7 +2258,11 @@ def evolve(config: SearchConfig, verbose: bool = True,
         return True
     
     def add_scale_if_valid(scale, target_len=None):
-        """Add scale to population if it meets size and constraint requirements."""
+        """Add scale to population if it meets size and constraint requirements.
+        
+        If scale is shorter than target, adds random notes from candidates.
+        If scale is longer than target, removes notes (keeping required ones).
+        """
         # Sanitize: ensure all ratios are within octave, no duplicates
         scale = sanitize_scale(scale)
         
@@ -2270,13 +2274,42 @@ def evolve(config: SearchConfig, verbose: bool = True,
                 fitness = eval_scale_cached(scale)
                 population.append((fitness, list(scale)))
             elif len(scale) > target_len:
-                # Randomly sample to target length, but keep required notes
+                # Remove notes to reach target length, but keep required notes
                 optional = [n for n in scale if n not in required_notes]
                 num_optional = target_len - len(required_notes)
                 if num_optional >= 0 and len(optional) >= num_optional:
                     trimmed = list(required_notes) + random.sample(optional, num_optional)
                     fitness = eval_scale_cached(trimmed)
                     population.append((fitness, trimmed))
+            else:
+                # Scale is shorter - add notes from candidates to reach target
+                scale_set = set(scale)
+                available = [c for c in candidates 
+                            if c not in scale_set and c not in excluded_notes]
+                num_to_add = target_len - len(scale)
+                if len(available) >= num_to_add:
+                    # Weight toward simpler ratios
+                    available_weights = [candidate_weights[candidates.index(c)] 
+                                        for c in available]
+                    additions = []
+                    for _ in range(num_to_add):
+                        if not available:
+                            break
+                        # Weighted random selection
+                        total_w = sum(available_weights)
+                        r = random.random() * total_w
+                        cumsum = 0
+                        for idx, w in enumerate(available_weights):
+                            cumsum += w
+                            if cumsum >= r:
+                                additions.append(available[idx])
+                                available.pop(idx)
+                                available_weights.pop(idx)
+                                break
+                    expanded = list(scale) + additions
+                    if check_constraints(expanded):
+                        fitness = eval_scale_cached(expanded)
+                        population.append((fitness, expanded))
         else:
             if config.min_notes - 1 <= len(scale) <= config.max_notes - 1:
                 fitness = eval_scale_cached(scale)

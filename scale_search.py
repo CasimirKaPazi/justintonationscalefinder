@@ -22,6 +22,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import random
 import math
 import bisect
+import re
 from fractions import Fraction
 from dataclasses import dataclass
 from typing import List, Set, Tuple, Optional
@@ -33,13 +34,14 @@ class SearchConfig:
     """
     Configuration for scale search.
     
-    Note: 'notes' counts total scale degrees INCLUDING the octave.
-    So a 7-note scale has 6 ratios between 1/1 and 2/1, plus the octave.
+    Note: 'notes' counts pitch classes INCLUDING the tonic 1/1, but NOT the
+    octave repeat 2/1. So a 7-note scale has 7 pitch classes (1/1 plus 6 ratios),
+    with 2/1 as the implicit octave boundary.
     
     Defaults:
         max_notes: 7 (heptatonic)
         min_notes: 3 (minimum viable scale)
-        ratio_limit: 64 (allows up to 31-limit intervals)
+        ratio_limit: 64 (allows up to 63-limit intervals)
         population_size: 300
         generations: 500
         mutation_rate: 0.3
@@ -53,7 +55,7 @@ class SearchConfig:
     max_notes: int = 7          # Maximum notes in scale (including octave)
     min_notes: int = 3          # Minimum notes in scale (including octave)
     fixed_notes: int = None     # If set, use exactly this many notes (including octave)
-    ratio_limit: int = 64       # Max numerator/denominator (32 allows up to 31-limit)
+    ratio_limit: int = 64       # Max numerator/denominator (64 allows up to 63-limit)
     population_size: int = 300
     generations: int = 500
     mutation_rate: float = 0.3
@@ -70,7 +72,7 @@ class SearchConfig:
     edo: int = 0                # If > 0, penalize notes far from this EDO's steps
     # Note constraints
     required_notes: List[Fraction] = None  # Notes that must be in every scale
-    excluded_notes: List[Fraction] = None  # Notes that must not appear
+    excluded_notes: Set[Fraction] = None   # Notes that must not appear
     # Interval combination method
     combine_method: str = 'geometric'  # 'geometric', 'worst', or 'mean'
     
@@ -82,7 +84,9 @@ class SearchConfig:
         if self.required_notes is None:
             self.required_notes = []
         if self.excluded_notes is None:
-            self.excluded_notes = []
+            self.excluded_notes = set()
+        else:
+            self.excluded_notes = set(self.excluded_notes)
         # Swap min/max if backwards
         if self.min_notes > self.max_notes:
             self.min_notes, self.max_notes = self.max_notes, self.min_notes
@@ -117,12 +121,6 @@ def parse_ratios(ratio_str: str) -> List[Fraction]:
             # Bare integer means n/1
             ratios.append(Fraction(int(part.strip()), 1))
     return ratios
-
-
-def gcd(a: int, b: int) -> int:
-    while b:
-        a, b = b, a % b
-    return a
 
 
 def prime_factors(n: int) -> List[Tuple[int, int]]:
@@ -179,7 +177,7 @@ def tenney_height(ratio: Fraction) -> float:
 def euler_gradus(ratio: Fraction) -> float:
     """
     Euler's Gradus Suavitatis (degree of sweetness).
-    Γ = 1 + Σ(p - 1) * e for prime factorization Πp^e
+    Î“ = 1 + Î£(p - 1) * e for prime factorization Î p^e
     Applied to n*d of ratio n/d.
     Lower = more consonant. Favors powers of 2 and 3.
     """
@@ -199,7 +197,7 @@ def _init_entropy_ratios():
     max_complexity = 100
     for d in range(1, 16):
         for n in range(d, 2 * d + 1):
-            if gcd(n, d) == 1:
+            if math.gcd(n, d) == 1:
                 complexity = n * d
                 if complexity <= max_complexity:
                     _ENTROPY_SIMPLE_RATIOS.append((math.log2(n / d), complexity))
@@ -214,7 +212,7 @@ def harmonic_entropy(ratio: Fraction, spread: float = 0.017) -> float:
     have higher entropy than those clearly identified with one simple ratio.
     
     The spread parameter (in octaves) controls the uncertainty window.
-    0.017 octaves ≈ 20 cents, which is roughly a just-noticeable difference.
+    0.017 octaves â‰ˆ 20 cents, which is roughly a just-noticeable difference.
     
     Lower = more consonant (less ambiguous).
     """
@@ -307,10 +305,10 @@ def step_size_penalty(scale: List[Fraction], threshold_cents: float = 80.0,
     
     The decay parameter controls how quickly penalty drops off.
     With threshold=80 and decay=25:
-      - 0 cents (unison): penalty ≈ 1.0
-      - 30 cents: penalty ≈ 0.3
-      - 50 cents: penalty ≈ 0.14
-      - 80 cents: penalty ≈ 0.04
+      - 0 cents (unison): penalty â‰ˆ 1.0
+      - 30 cents: penalty â‰ˆ 0.3
+      - 50 cents: penalty â‰ˆ 0.14
+      - 80 cents: penalty â‰ˆ 0.04
     
     Returns average penalty across all adjacent steps.
     Lower = better (more distinct steps).
@@ -353,11 +351,11 @@ def prime_diversity_score(scale: List[Fraction]) -> float:
     Returns sum of 1/p for each distinct prime p > 5.
     
     This naturally weights lower primes more heavily:
-    - Having 7 contributes 1/7 ≈ 0.143
-    - Having 11 contributes 1/11 ≈ 0.091  
-    - Having 13 contributes 1/13 ≈ 0.077
-    - Having 17 contributes 1/17 ≈ 0.059
-    - Having 19 contributes 1/19 ≈ 0.053
+    - Having 7 contributes 1/7 â‰ˆ 0.143
+    - Having 11 contributes 1/11 â‰ˆ 0.091  
+    - Having 13 contributes 1/13 â‰ˆ 0.077
+    - Having 17 contributes 1/17 â‰ˆ 0.059
+    - Having 19 contributes 1/19 â‰ˆ 0.053
     
     Example scores:
     - 5-limit only: 0.0
@@ -380,7 +378,7 @@ def edo_penalty(scale: List[Fraction], edo: int = 12) -> float:
     Notes at EDO steps get 0 penalty.
     Notes at midpoints (halfway between steps) get maximum penalty of 1.
     
-    Uses cosine curve: penalty = (1 - cos(2π * distance / step_size)) / 2
+    Uses cosine curve: penalty = (1 - cos(2Ï€ * distance / step_size)) / 2
     This gives smooth transitions with 0 at steps and 1 at midpoints.
     
     Returns average penalty across all scale notes (0 = perfect EDO match).
@@ -516,8 +514,8 @@ def scale_balance(scale: List[Fraction]) -> float:
     
     Examples:
     - 12-EDO: balance = 0 (all steps equal)
-    - Major scale: balance ≈ 0.33 (mix of whole and half steps)
-    - Pentatonic: balance ≈ 0.22 (fairly even)
+    - Major scale: balance â‰ˆ 0.33 (mix of whole and half steps)
+    - Pentatonic: balance â‰ˆ 0.22 (fairly even)
     """
     if len(scale) < 1:
         return 0.0
@@ -615,23 +613,23 @@ def scale_variety(scale: List[Fraction]) -> float:
     """
     Measure interval variety using soft clustering via Gaussian kernel.
     
-    For each pair of intervals, computes similarity = exp(-d²/2σ²) where d is
+    For each pair of intervals, computes similarity = exp(-dÂ²/2ÏƒÂ²) where d is
     the distance in cents. Sums all similarities - lower sum means intervals
     are more spread out (higher variety).
     
     Returns 1 - (total_similarity / max_possible_similarity).
     
-    The kernel width σ = 10 cents is motivated by the Just Noticeable Difference
+    The kernel width Ïƒ = 10 cents is motivated by the Just Noticeable Difference
     (JND) for melodic pitch - intervals within ~10 cents are perceptually similar.
     
     This is smooth and principled:
-    - 3/2 (702¢) and 301/200 (707¢) contribute high similarity (low variety)
-    - 3/2 (702¢) and 7/5 (583¢) contribute negligible similarity (high variety)
+    - 3/2 (702Â¢) and 301/200 (707Â¢) contribute high similarity (low variety)
+    - 3/2 (702Â¢) and 7/5 (583Â¢) contribute negligible similarity (high variety)
     - No hard thresholds - similarity falls off smoothly with distance
     
     Examples:
     - Hexany: ~0.98 (all intervals perceptually distinct)
-    - Major scale: ~0.95 (some intervals cluster, e.g. multiple ~200¢)
+    - Major scale: ~0.95 (some intervals cluster, e.g. multiple ~200Â¢)
     """
     if len(scale) < 1:
         return 1.0
@@ -781,7 +779,6 @@ def fingerprint_diversity_score(fingerprint: Tuple[float, ...],
     return sum(k_nearest) / len(k_nearest)
 
 
-import re
 
 def parse_metrics(metric_str: str) -> Tuple[List[Tuple[str, float]], List[Tuple[str, float]], int]:
     """
@@ -823,11 +820,42 @@ def parse_metrics(metric_str: str) -> Tuple[List[Tuple[str, float]], List[Tuple[
             all_metrics = list(CONSONANCE_METRICS.keys()) + list(SCALE_METRICS.keys()) + ['edoN/nejiN']
             raise ValueError(f"Unknown metric: {name}. Available: {all_metrics}")
     
-    # Default to tenney if no interval metrics specified
+    # Default to barlow if no interval metrics specified
     if not interval_metrics:
-        interval_metrics = [('tenney', 1.0)]
+        interval_metrics = [('barlow', 1.0)]
     
     return interval_metrics, scale_metrics, edo
+
+
+def format_metric_description(metrics: List[Tuple[str, float]], 
+                               scale_metrics: List[Tuple[str, float]] = None,
+                               edo: int = 0) -> str:
+    """
+    Build a human-readable description of the metric configuration.
+    
+    Examples:
+        "Barlow harmonicity/indigestibility"
+        "Combined: tenney:1.0, roughness:0.5 + scale[steps:0.3]"
+    """
+    if scale_metrics is None:
+        scale_metrics = []
+    
+    if len(metrics) == 1:
+        _, desc = CONSONANCE_METRICS[metrics[0][0]]
+    else:
+        parts = [f"{name}:{weight}" for name, weight in metrics]
+        desc = "Combined: " + ", ".join(parts)
+    
+    if scale_metrics:
+        scale_parts = []
+        for name, weight in scale_metrics:
+            if name == 'edo':
+                scale_parts.append(f"edo{edo}:{weight}")
+            else:
+                scale_parts.append(f"{name}:{weight}")
+        desc += " + scale[" + ", ".join(scale_parts) + "]"
+    
+    return desc
 
 
 def combined_metric(ratio: Fraction, metrics: List[Tuple[str, float]], normalize: bool = True) -> float:
@@ -863,7 +891,7 @@ def generate_candidate_ratios(limit: int) -> Tuple[List[Fraction], List[float]]:
     for d in range(1, limit + 1):
         for n in range(d + 1, 2 * d):  # ratios between 1 and 2
             if n <= limit:
-                g = gcd(n, d)
+                g = math.gcd(n, d)
                 ratios.add(Fraction(n // g, d // g))
     
     sorted_ratios = sorted(ratios)
@@ -893,16 +921,16 @@ def interval_key(r1: Fraction, r2: Fraction) -> Tuple[int, int]:
     # Compute r2/r1 = (r2.num * r1.den) / (r2.den * r1.num)
     n = r2.numerator * r1.denominator
     d = r2.denominator * r1.numerator
-    g = gcd(n, d)
+    g = math.gcd(n, d)
     n, d = n // g, d // g
     # Reduce to within octave
     while n >= 2 * d:
         n, d = n, d * 2
-        g = gcd(n, d)
+        g = math.gcd(n, d)
         n, d = n // g, d // g
     while n < d:
         n, d = n * 2, d
-        g = gcd(n, d)
+        g = math.gcd(n, d)
         n, d = n // g, d // g
     return (n, d)
 
@@ -950,7 +978,7 @@ def evaluate_scale(scale: List[Fraction],
         for note in base_scale:
             n = note.numerator * mult_n
             d = note.denominator * mult_d
-            g = gcd(n, d)
+            g = math.gcd(n, d)
             full_scale.append((n // g, d // g))
     
     # Remove duplicates and sort by value
@@ -968,17 +996,17 @@ def evaluate_scale(scale: List[Fraction],
             # Compute interval key directly (faster than using Fraction)
             int_n = n2 * d1
             int_d = d2 * n1
-            g = gcd(int_n, int_d)
+            g = math.gcd(int_n, int_d)
             int_n, int_d = int_n // g, int_d // g
             
             # Reduce to single octave
             while int_n >= 2 * int_d:
                 int_d *= 2
-                g = gcd(int_n, int_d)
+                g = math.gcd(int_n, int_d)
                 int_n, int_d = int_n // g, int_d // g
             while int_n < int_d:
                 int_n *= 2
-                g = gcd(int_n, int_d)
+                g = math.gcd(int_n, int_d)
                 int_n, int_d = int_n // g, int_d // g
             
             key = (int_n, int_d)
@@ -1023,9 +1051,9 @@ def evaluate_scale(scale: List[Fraction],
         log_sum = sum(math.log(s) for s in clamped)
         raw_interval_penalty = math.exp(log_sum / len(clamped))
     elif combine_method.startswith('power'):
-        # Power mean: (1/n * Σ x^p)^(1/p)
+        # Power mean: (1/n * Î£ x^p)^(1/p)
         # Higher p emphasizes worse (higher) penalties more
-        # p=1 is arithmetic mean, p=2 is RMS, p→∞ approaches max
+        # p=1 is arithmetic mean, p=2 is RMS, pâ†’âˆž approaches max
         try:
             p = int(combine_method[5:]) if len(combine_method) > 5 else 2
         except ValueError:
@@ -1037,7 +1065,7 @@ def evaluate_scale(scale: List[Fraction],
         raw_interval_penalty = (power_sum / len(clamped)) ** (1 / p)
     elif combine_method == 'logloss':
         # Log loss: heavily penalizes near-dissonant intervals
-        # -log(1-p) grows unboundedly as p→1
+        # -log(1-p) grows unboundedly as pâ†’1
         # We compute mean log loss then squash back to [0,1)
         # Clamp away from 1 to avoid log(0)
         clamped = [min(0.999, s) for s in interval_scores]
@@ -1049,10 +1077,19 @@ def evaluate_scale(scale: List[Fraction],
         raw_interval_penalty = sum(interval_scores) / len(interval_scores)
     
     # Note count normalization - two-stage correction:
+    # 
+    # Problem: larger scales naturally have worse average interval scores because
+    # they include more complex intervals. Without correction, the optimizer always
+    # prefers fewer notes.
+    #
     # 1. Penalty scaling: divide penalty by note_count_factor to account for 
     #    more intervals naturally having higher average dissonance
     # 2. Empirical correction: additional multiplicative factor based on 
-    #    calibration data to make scores comparable across scale sizes
+    #    calibration data to make scores comparable across scale sizes.
+    #    Calibrated against barlow metric with geometric combine method.
+    #    This is approximate — other metric/combine combinations will have
+    #    slightly different bias, but it prevents gross score inflation/deflation
+    #    when searching across variable note counts.
     
     num_notes = len(scale) + 1  # +1 for 1/1 (2/1 is octave, not separately counted)
     
@@ -1062,7 +1099,7 @@ def evaluate_scale(scale: List[Fraction],
     
     # Stage 2: Empirical correction based on calibration
     # After stage 1, scores still decrease roughly linearly with note count.
-    # Calibration data shows: expected_score ≈ 0.9487 - 0.00795 * n
+    # Calibration data shows: expected_score â‰ˆ 0.9487 - 0.00795 * n
     # We normalize to n=7 (heptatonic) as reference.
     baseline_intercept = 0.9487
     baseline_slope = -0.00795
@@ -1538,7 +1575,7 @@ def mutate_combine(note1: Fraction, note2: Fraction, limit: int) -> Fraction:
 def mutate_stack(scale: List[Fraction], limit: int) -> Fraction:
     """
     La Monte Young style: stack intervals to create complex ratios.
-    E.g., 7/4 × 7/4 × 3/2 × 3/2 × 3/2 = 1323/1024
+    E.g., 7/4 Ã— 7/4 Ã— 3/2 Ã— 3/2 Ã— 3/2 = 1323/1024
     """
     # Choose 2-5 intervals to stack (from scale or simple intervals)
     num_stacks = random.randint(2, 5)
@@ -1680,7 +1717,7 @@ def mutate(scale: List[Fraction], candidates: List[Fraction], config: SearchConf
     1. Transpose a note by a simple interval (fifth, third, seventh, etc.)
     2. Comma shift (subtle pitch adjustment by syntonic/septimal comma)
     3. Combine two notes from the scale (like La Monte Young's 1323/1024)
-    4. Stack intervals La Monte Young style (7/4 × 7/4 × 3/2 × 3/2...)
+    4. Stack intervals La Monte Young style (7/4 Ã— 7/4 Ã— 3/2 Ã— 3/2...)
     5. Mediant - create ratio "between" two scale notes
     6. Random replacement from candidates (fallback)
     
@@ -1690,7 +1727,7 @@ def mutate(scale: List[Fraction], candidates: List[Fraction], config: SearchConf
     scale_set = set(scale)
     limit = config.ratio_limit
     required_set = set(config.required_notes) if config.required_notes else set()
-    excluded_set = set(config.excluded_notes) if config.excluded_notes else set()
+    excluded_set = config.excluded_notes
     
     # Indices of notes that can be mutated (not required)
     mutable_indices = [i for i, note in enumerate(scale) if note not in required_set]
@@ -1763,7 +1800,7 @@ def crossover_uniform(parent1: List[Fraction], parent2: List[Fraction], config: 
     Respects required_notes (always included) and excluded_notes (filtered out).
     """
     required = set(config.required_notes) if config.required_notes else set()
-    excluded = set(config.excluded_notes) if config.excluded_notes else set()
+    excluded = config.excluded_notes
     
     # Combine parents, filter excluded, ensure required
     combined = (set(parent1) | set(parent2)) - excluded
@@ -1806,7 +1843,7 @@ def crossover_blend(parent1: List[Fraction], parent2: List[Fraction], config: Se
     Respects required_notes and excluded_notes.
     """
     required = set(config.required_notes) if config.required_notes else set()
-    excluded = set(config.excluded_notes) if config.excluded_notes else set()
+    excluded = config.excluded_notes
     
     p1_sorted = sorted(parent1, key=lambda r: float(r))
     p2_sorted = sorted(parent2, key=lambda r: float(r))
@@ -1848,7 +1885,7 @@ def crossover_pivot(parent1: List[Fraction], parent2: List[Fraction], config: Se
     Respects required_notes and excluded_notes.
     """
     required = set(config.required_notes) if config.required_notes else set()
-    excluded = set(config.excluded_notes) if config.excluded_notes else set()
+    excluded = config.excluded_notes
     
     p1_sorted = sorted(parent1, key=lambda r: float(r))
     p2_sorted = sorted(parent2, key=lambda r: float(r))
@@ -1907,7 +1944,7 @@ def crossover_interval_preserving(parent1: List[Fraction], parent2: List[Fractio
     Respects required_notes and excluded_notes.
     """
     required = set(config.required_notes) if config.required_notes else set()
-    excluded = set(config.excluded_notes) if config.excluded_notes else set()
+    excluded = config.excluded_notes
     
     p1_sorted = sorted(parent1, key=lambda r: float(r))
     p2_sorted = sorted(parent2, key=lambda r: float(r))
@@ -1991,7 +2028,7 @@ def local_search(scale: List[Fraction], candidates: List[Fraction],
     Respects required_notes (won't modify) and excluded_notes (won't add).
     """
     required = set(config.required_notes) if config.required_notes else set()
-    excluded = set(config.excluded_notes) if config.excluded_notes else set()
+    excluded = config.excluded_notes
     
     current = scale.copy()
     current_fitness = eval_fn(current)
@@ -2210,27 +2247,14 @@ def evolve(config: SearchConfig, verbose: bool = True,
     candidate_cents.sort()  # Sort by cents value
     
     # Build metric description string
-    if len(metrics) == 1:
-        _, metric_desc = CONSONANCE_METRICS[metrics[0][0]]
-    else:
-        parts = [f"{name}:{weight}" for name, weight in metrics]
-        metric_desc = "Combined: " + ", ".join(parts)
-    
-    if scale_metrics:
-        scale_parts = []
-        for name, weight in scale_metrics:
-            if name == 'edo':
-                scale_parts.append(f"edo{edo}:{weight}")
-            else:
-                scale_parts.append(f"{name}:{weight}")
-        metric_desc += " + scale[" + ", ".join(scale_parts) + "]"
+    metric_desc = format_metric_description(metrics, scale_metrics, edo)
     
     note_desc = f"exactly {config.fixed_notes}" if config.fixed_notes else f"up to {config.max_notes}"
     octave_desc = f"{2 * octave_range + 1} octaves" if octave_range > 0 else "1 octave"
     
     # Note constraints
     required_notes = config.required_notes if config.required_notes else []
-    excluded_notes = set(config.excluded_notes) if config.excluded_notes else set()
+    excluded_notes = config.excluded_notes
     
     if verbose:
         print(f"Generated {len(candidates)} candidate ratios")
@@ -2241,7 +2265,7 @@ def evolve(config: SearchConfig, verbose: bool = True,
         print()
     
     # Lazy interval cache - compute on demand instead of precomputing all pairs
-    # This avoids O(n²) precomputation which becomes prohibitive for large ratio limits
+    # This avoids O(nÂ²) precomputation which becomes prohibitive for large ratio limits
     interval_cache = {}
     
     # Scale fitness cache: frozenset of (n,d) tuples -> fitness
@@ -2579,11 +2603,11 @@ def format_scale(scale: List[Fraction], verbose: bool = False) -> str:
     for r in sorted(scale):
         if verbose:
             cents = 1200 * math.log2(float(r))
-            lines.append(f"{r.numerator}/{r.denominator}  ({cents:.1f} cents, Tenney: {tenney_height(r):.2f})")
+            lines.append(f"{r.numerator}/{r.denominator}  ({cents:.1f} cents)")
         else:
             lines.append(f"{r.numerator}/{r.denominator}")
     if verbose:
-        lines.append(f"2/1  (1200.0 cents, Tenney: {tenney_height(Fraction(2,1)):.2f})")
+        lines.append(f"2/1  (1200.0 cents)")
     else:
         lines.append("2/1")
     return "\n".join(lines)
@@ -2626,20 +2650,7 @@ def evaluate_named_scale(name: str, ratios: List[str], metrics: List[Tuple[str, 
     fitness, details = evaluate_scale(scale, metrics, octave_range, None, scale_metrics, edo, combine_method)
     
     # Build metric description
-    if len(metrics) == 1:
-        _, metric_desc = CONSONANCE_METRICS[metrics[0][0]]
-    else:
-        parts = [f"{name}:{weight}" for name, weight in metrics]
-        metric_desc = "Combined: " + ", ".join(parts)
-    
-    if scale_metrics:
-        scale_parts = []
-        for mname, weight in scale_metrics:
-            if mname == 'edo':
-                scale_parts.append(f"edo{edo}:{weight}")
-            else:
-                scale_parts.append(f"{mname}:{weight}")
-        metric_desc += " + scale[" + ", ".join(scale_parts) + "]"
+    metric_desc = format_metric_description(metrics, scale_metrics, edo)
     
     print(f"\n{'=' * 60}")
     print(f"Scale: {name}")
@@ -2680,12 +2691,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s --notes 7 --metric tenney
-  %(prog)s --notes 7 --metric "tenney:1,roughness:0.5"
+  %(prog)s --notes 7 --metric barlow
+  %(prog)s --notes 7 --metric "barlow:1,roughness:0.5"
   %(prog)s --notes 12 --metric "soft_tenney:1,primes:0.5" --ratio-limit 64
   %(prog)s --notes 12 --metric "tenney:1,edo12:2"  # neji scale
   %(prog)s --seeds my_scales.txt --notes 7  # use seed scales from file
-  %(prog)s --compare --metric wilson
+  %(prog)s --compare --metric barlow
 
 Seed file format (supports Scala .scl format):
   ! comment (Scala style)
@@ -2705,9 +2716,9 @@ Seed file format (supports Scala .scl format):
 
 Defaults:
   --notes: 7 (heptatonic scale)
-  --ratio-limit: 32 (allows up to 31-limit intervals)
+  --ratio-limit: 64 (allows up to 63-limit intervals)
   --generations: 500
-  --population: 200
+  --population: 300
   --temp: 0.1
   --octaves: 1 (evaluate across 3 octaves)
   --seeds: none (unbiased random initialization)
@@ -2722,16 +2733,16 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
                         help="Maximum notes in scale (default: 7)")
     parser.add_argument("--min-notes", type=int, default=3, 
                         help="Minimum notes in scale (default: 3)")
-    parser.add_argument("--ratio-limit", type=int, default=32, 
-                        help="Max numerator/denominator (default: 32)")
+    parser.add_argument("--ratio-limit", type=int, default=64, 
+                        help="Max numerator/denominator (default: 64)")
     parser.add_argument("--generations", type=int, default=500, 
                         help="Number of generations (default: 500)")
-    parser.add_argument("--population", type=int, default=200, 
-                        help="Population size (default: 200)")
+    parser.add_argument("--population", type=int, default=300, 
+                        help="Population size (default: 300)")
     parser.add_argument("--runs", type=int, default=1, 
                         help="Number of independent runs (default: 1)")
-    parser.add_argument("--metric", type=str, default='tenney', 
-                        help="Metric(s) to use. Single: 'tenney'. Combined: 'tenney:1,roughness:0.5'")
+    parser.add_argument("--metric", type=str, default='barlow', 
+                        help="Metric(s) to use. Single: 'barlow'. Combined: 'barlow:1,roughness:0.5'")
     parser.add_argument("--temp", type=float, default=0.1, 
                         help="Initial SA temperature (default: 0.1, higher=more exploration)")
     parser.add_argument("--octaves", type=int, default=1, 
@@ -2818,20 +2829,7 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
             print(f"Loaded {len(seed_scales)} seed scales from {args.seeds}")
     
     # Build metric description
-    if len(metrics) == 1:
-        _, metric_desc = CONSONANCE_METRICS[metrics[0][0]]
-    else:
-        parts = [f"{name}:{weight}" for name, weight in metrics]
-        metric_desc = "Combined: " + ", ".join(parts)
-    
-    if scale_metrics:
-        scale_parts = []
-        for name, weight in scale_metrics:
-            if name == 'edo':
-                scale_parts.append(f"edo{edo}:{weight}")
-            else:
-                scale_parts.append(f"{name}:{weight}")
-        metric_desc += " + scale[" + ", ".join(scale_parts) + "]"
+    metric_desc = format_metric_description(metrics, scale_metrics, edo)
     
     note_desc = f"exactly {config.fixed_notes}" if config.fixed_notes else f"{config.min_notes}-{config.max_notes}"
     octave_desc = f"{2 * config.octave_range + 1} octaves" if config.octave_range > 0 else "1 octave"

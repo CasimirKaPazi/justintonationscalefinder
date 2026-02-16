@@ -7,11 +7,12 @@ This was created with Claude (Anthropic).
 ## Features
 
 - **Multiple consonance metrics**: Tenney height, Euler gradus, harmonic entropy, Plomp-Levelt roughness, Wilson complexity, Barlow harmonicity, odd-limit
-- **Scale-level metrics**: Step balance, Rothenberg propriety, prime diversity, EDO approximation
-- **Interval combination methods**: Geometric mean (default), worst-case, arithmetic mean
+- **Scale-level metrics**: Step balance, Rothenberg propriety, prime diversity, interval variety, EDO approximation
+- **Interval combination methods**: Geometric mean (default), worst-case, arithmetic mean, power mean, log loss
 - **Evolutionary optimization**: Genetic algorithm with simulated annealing, adaptive mutation, and fingerprint-based diversity
 - **Flexible constraints**: Required/excluded notes, variable note counts, ratio complexity limits
 - **Seed scales**: Initialize from existing scales (Scala .scl format supported)
+- **Reproducibility**: Optional random seed for deterministic results
 
 ## Installation
 
@@ -42,6 +43,9 @@ python scale_search.py --notes 7 --include "3/2,4/3"
 # 19-EDO neji (near-equivalent just intonation approximation of 19-EDO)
 python scale_search.py --metric "soft_tenney:1,edo19:2" --notes 19
 
+# Reproducible, script-friendly output
+python scale_search.py --notes 7 --quiet --random-seed 42
+
 # Elaborate search with various settings
 python scale_search.py --metric "wilson:1,barlow:1,propriety:1,variety:0.1,entropy:0.5,roughness:0.5" --population 500 --octaves 2 --min-notes 12 --max-notes 16 --include "7/6" --seeds seeds.txt
 ```
@@ -54,7 +58,7 @@ python scale_search.py --metric "wilson:1,barlow:1,propriety:1,variety:0.1,entro
 | `tenney` | Tenney height: log₂(n×d) |
 | `soft_tenney` | √(Tenney) — gentler on higher primes |
 | `euler` | Euler's Gradus Suavitatis |
-| `barlow` | Barlow harmonicity/indigestibility |
+| `barlow` | Barlow harmonicity/indigestibility (default) |
 | `odd_limit` | Largest odd factor (log₂) |
 | `roughness` | Plomp-Levelt sensory dissonance |
 | `entropy` | Harmonic entropy (Erlich) |
@@ -119,10 +123,13 @@ The file `seeds.txt` provides over 200 scales for up to 31 notes.
 
 The tool outputs:
 
-- The best scale found (ratios and cents)
+- The best scale found (ratios)
 - Quality score (0-1, higher = better)
 - Interval matrix showing pairwise consonance
+- Metric breakdown when using multiple metrics
 - Match notification if result equals a seed scale
+
+Use `--quiet` to suppress everything except the quality score and scale ratios.
 
 ## Algorithm
 
@@ -143,6 +150,7 @@ The tool outputs:
 - Below 7 notes, most combinations of metrics converge on the same scales.
 - Including and excluding notes can be used to steer the result towards an intended flavor.
 - Metric can also be used with negative value.
+- Use `--random-seed N` for reproducible results across runs.
 
 ## License
 

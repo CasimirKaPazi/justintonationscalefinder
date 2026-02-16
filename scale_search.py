@@ -956,26 +956,6 @@ def interval_between(r1: Fraction, r2: Fraction) -> Fraction:
     return interval
 
 
-def interval_key(r1: Fraction, r2: Fraction) -> Tuple[int, int]:
-    """Get a hashable key for the interval between two ratios, reduced to one octave."""
-    if (r1.numerator * r2.denominator) > (r2.numerator * r1.denominator):
-        r1, r2 = r2, r1
-    # Compute r2/r1 = (r2.num * r1.den) / (r2.den * r1.num)
-    n = r2.numerator * r1.denominator
-    d = r2.denominator * r1.numerator
-    g = math.gcd(n, d)
-    n, d = n // g, d // g
-    # Reduce to within octave
-    while n >= 2 * d:
-        n, d = n, d * 2
-        g = math.gcd(n, d)
-        n, d = n // g, d // g
-    while n < d:
-        n, d = n * 2, d
-        g = math.gcd(n, d)
-        n, d = n // g, d // g
-    return (n, d)
-
 
 def evaluate_scale(scale: List[Fraction], 
                    metrics: List[Tuple[str, float]] = None,
@@ -1194,8 +1174,6 @@ def evaluate_scale(scale: List[Fraction],
     metric_avgs.update(scale_metric_scores)
     
     details = {
-        'intervals': [],
-        'avg_score': 1.0 - final_quality,  # For backward compat: lower = better
         'quality': final_quality,  # Higher = better, range 0-1
         'interval_quality': interval_quality,
         'raw_interval_penalty': raw_interval_penalty,
@@ -2722,6 +2700,7 @@ Examples:
   %(prog)s --notes 12 --metric "tenney:1,edo12:2"  # neji scale
   %(prog)s --seeds my_scales.txt --notes 7  # use seed scales from file
   %(prog)s --compare --metric barlow
+  %(prog)s --notes 7 --quiet --random-seed 42  # reproducible, script-friendly
 
 Seed file format (supports Scala .scl format):
   ! comment (Scala style)
@@ -2780,6 +2759,10 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
                         help="Excluded notes (comma-separated ratios, e.g., '7/4,11/8')")
     parser.add_argument("--combine", type=str, default='geometric',
                         help="How to combine interval scores: geometric (default), worst, mean, power2, power3, logloss")
+    parser.add_argument("--random-seed", type=int, default=None, metavar="N",
+                        help="Random seed for reproducible results")
+    parser.add_argument("--quiet", action="store_true",
+                        help="Suppress progress output (only show results)")
     parser.add_argument("--compare", action="store_true", 
                         help="Compare known scales instead of searching")
     parser.add_argument("--list-metrics", action="store_true", 
@@ -2810,6 +2793,10 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
     except ValueError as e:
         print(f"Error: {e}")
         return
+    
+    # Set random seed for reproducibility
+    if args.random_seed is not None:
+        random.seed(args.random_seed)
     
     # Compute normalization ranges for the given ratio limit
     init_normalization(args.ratio_limit)
@@ -2848,12 +2835,14 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
         combine_method=args.combine,
     )
     
+    verbose = not args.quiet
+    
     # Load seed scales if specified (with names for matching)
     seed_scales = None
     seed_names = None
     if args.seeds:
         seed_scales, seed_names = load_seed_scales(args.seeds, with_names=True)
-        if seed_scales:
+        if seed_scales and verbose:
             print(f"Loaded {len(seed_scales)} seed scales from {args.seeds}")
     
     # Build metric description
@@ -2878,38 +2867,43 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
     else:
         combine_desc_str = combine_desc_map.get(config.combine_method, config.combine_method)
     
-    print("=" * 60)
-    print("Just Intonation Scale Search")
-    print("=" * 60)
-    print(f"Notes: {note_desc}")
-    print(f"Ratio limit: {config.ratio_limit}")
-    print(f"Octave range: {octave_desc}")
-    print(f"Metric: {metric_desc}")
-    print(f"Interval combination: {combine_desc_str}")
-    print(f"Generations: {config.generations}")
-    print("=" * 60)
-    print()
+    if verbose:
+        print("=" * 60)
+        print("Just Intonation Scale Search")
+        print("=" * 60)
+        print(f"Notes: {note_desc}")
+        print(f"Ratio limit: {config.ratio_limit}")
+        print(f"Octave range: {octave_desc}")
+        print(f"Metric: {metric_desc}")
+        print(f"Interval combination: {combine_desc_str}")
+        print(f"Generations: {config.generations}")
+        if args.random_seed is not None:
+            print(f"Random seed: {args.random_seed}")
+        print("=" * 60)
+        print()
     
     best_overall = None
     
     for run in range(args.runs):
-        if args.runs > 1:
+        if args.runs > 1 and verbose:
             print(f"\n--- Run {run + 1}/{args.runs} ---\n")
         
-        scale, fitness, details = evolve(config, seed_scales=seed_scales)
+        scale, fitness, details = evolve(config, verbose=verbose, seed_scales=seed_scales)
         
         if best_overall is None or fitness > best_overall[1]:
             best_overall = (scale, fitness, details)
     
     scale, fitness, details = best_overall
     
-    print("\n" + "=" * 60)
-    print("RESULTS")
-    print("=" * 60)
+    if verbose:
+        print("\n" + "=" * 60)
+        print("RESULTS")
+        print("=" * 60)
     
     # Summary
     print(f"\nQuality: {details['quality']:.4f}")
-    print(f"Intervals evaluated: {details['num_intervals']} (across {octave_desc})")
+    if verbose:
+        print(f"Intervals evaluated: {details['num_intervals']} (across {octave_desc})")
     
     # Check if this scale matches a seed
     if seed_scales:
@@ -2920,38 +2914,40 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
             else:
                 print(f"Matches seed #{match_idx + 1}")
     
-    # Show individual metric scores (normalized to 0-1, as quality: higher=better)
-    if len(metrics) > 1 or scale_metrics:
-        print("\nMetric breakdown (0-1, higher=better):")
-        for metric_name, weight in metrics:
-            raw = details['metric_averages'].get(metric_name, 0)
-            min_val, max_val = get_normalization(metric_name)
-            normalized = (raw - min_val) / (max_val - min_val)
-            normalized = max(0.0, min(1.0, normalized))
-            quality = 1.0 - normalized  # Invert: lower raw = higher quality
-            print(f"  {metric_name}: {quality:.3f} (weight {weight})")
+    if verbose:
+        # Show individual metric scores (normalized to 0-1, as quality: higher=better)
+        if len(metrics) > 1 or scale_metrics:
+            print("\nMetric breakdown (0-1, higher=better):")
+            for metric_name, weight in metrics:
+                raw = details['metric_averages'].get(metric_name, 0)
+                min_val, max_val = get_normalization(metric_name)
+                normalized = (raw - min_val) / (max_val - min_val)
+                normalized = max(0.0, min(1.0, normalized))
+                quality = 1.0 - normalized  # Invert: lower raw = higher quality
+                print(f"  {metric_name}: {quality:.3f} (weight {weight})")
+            
+            for metric_name, weight in scale_metrics:
+                raw = details['metric_averages'].get(metric_name, 0)
+                min_val, max_val = get_normalization(metric_name)
+                normalized = (raw - min_val) / (max_val - min_val)
+                normalized = max(0.0, min(1.0, normalized))
+                # 'primes' and 'variety' are positive (higher=better), others are penalties
+                if metric_name in ('primes', 'variety'):
+                    quality = normalized
+                else:
+                    quality = 1.0 - normalized
+                print(f"  {metric_name}: {quality:.3f} (weight {weight})")
         
-        for metric_name, weight in scale_metrics:
-            raw = details['metric_averages'].get(metric_name, 0)
-            min_val, max_val = get_normalization(metric_name)
-            normalized = (raw - min_val) / (max_val - min_val)
-            normalized = max(0.0, min(1.0, normalized))
-            # 'primes' and 'variety' are positive (higher=better), others are penalties
-            if metric_name in ('primes', 'variety'):
-                quality = normalized
-            else:
-                quality = 1.0 - normalized
-            print(f"  {metric_name}: {quality:.3f} (weight {weight})")
-    
-    # Interval matrix
-    print("\nInterval matrix (single octave):")
-    print()
-    print_interval_matrix(scale, metrics)
+        # Interval matrix
+        print("\nInterval matrix (single octave):")
+        print()
+        print_interval_matrix(scale, metrics)
     
     # The scale itself - just ratios for easy copying
-    print("\n" + "=" * 60)
-    print("SCALE")
-    print("=" * 60)
+    if verbose:
+        print("\n" + "=" * 60)
+        print("SCALE")
+        print("=" * 60)
     print()
     print(format_scale(scale))
 

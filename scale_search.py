@@ -692,17 +692,9 @@ SCALE_METRICS = {
     # 'edoN' handled specially in parse_metrics - generates neji scales
 }
 
-# Approximate ranges for normalization (based on typical intervals)
-# These help combine metrics that have very different scales
-METRIC_NORMALIZATION = {
-    'tenney': (1.0, 12.0),      # log2(2) to log2(64*64)
-    'euler': (1.0, 20.0),       # simple to complex
-    'entropy': (0.5, 4.0),      # low to high entropy
-    'roughness': (0.0, 1.5),    # smooth to rough
-    'wilson': (0.0, 12.0),      # simple to complex
-    'soft_tenney': (1.0, 3.5),  # sqrt of tenney range
-    'odd_limit': (0.0, 4.0),    # log2(1) to log2(15)
-    'barlow': (0.0, 20.0),      # simple to complex (similar range to euler)
+# Scale-level metric normalization ranges (these are inherent properties 
+# of scales, not dependent on ratio_limit)
+_SCALE_METRIC_NORMALIZATION = {
     'steps': (0.0, 0.5),        # 0 = no close steps, 0.5 = very clustered
     'primes': (0.0, 0.5),       # sum(1/p): 0=5-limit, 0.31=13-limit, 0.42=19-limit
     'balance': (0.0, 1.0),      # 0 = even steps, 1 = very uneven
@@ -710,6 +702,56 @@ METRIC_NORMALIZATION = {
     'variety': (0.0, 1.0),      # 0 = all intervals cluster, 1 = all perceptually distinct
     'edo': (0.0, 1.0),          # 0 = on EDO steps, 1 = at midpoints
 }
+
+# Active normalization ranges, populated by init_normalization()
+# Combines dynamically computed interval metric ranges with static scale metric ranges
+_normalization: dict = dict(_SCALE_METRIC_NORMALIZATION)
+_normalization_limit: int = 0  # Which ratio_limit was used to compute current ranges
+
+
+def init_normalization(ratio_limit: int, verbose: bool = False):
+    """
+    Compute normalization ranges for interval metrics by evaluating all candidate
+    ratios within the given ratio_limit.
+    
+    This replaces the old hardcoded ranges which were far too narrow for most
+    metrics (especially euler, wilson, barlow, odd_limit), causing the optimizer
+    to clamp the vast majority of intervals to the same maximum penalty score
+    and lose all discrimination between them.
+    
+    Must be called before any evaluation. Caches results per ratio_limit.
+    """
+    global _normalization, _normalization_limit
+    
+    if ratio_limit == _normalization_limit:
+        return  # Already computed for this limit
+    
+    candidates, _ = generate_candidate_ratios(ratio_limit)
+    
+    for name in CONSONANCE_METRICS:
+        fn, _ = CONSONANCE_METRICS[name]
+        values = [fn(r) for r in candidates]
+        if values:
+            _normalization[name] = (min(values), max(values))
+        else:
+            _normalization[name] = (0.0, 1.0)
+    
+    # Scale metrics keep their static ranges
+    _normalization.update(_SCALE_METRIC_NORMALIZATION)
+    
+    _normalization_limit = ratio_limit
+    
+    if verbose:
+        print("Metric normalization ranges (computed from candidates):")
+        for name in CONSONANCE_METRICS:
+            mn, mx = _normalization[name]
+            print(f"  {name:12s}: [{mn:.2f}, {mx:.2f}]")
+        print()
+
+
+def get_normalization(metric_name: str) -> Tuple[float, float]:
+    """Get the normalization range for a metric."""
+    return _normalization.get(metric_name, (0.0, 1.0))
 
 
 def scale_fingerprint(details: dict) -> Tuple[float, ...]:
@@ -728,7 +770,7 @@ def scale_fingerprint(details: dict) -> Tuple[float, ...]:
     # Add interval metric averages (normalized)
     for metric_name, _ in details.get('metrics', []):
         raw = details['metric_averages'].get(metric_name, 0)
-        min_val, max_val = METRIC_NORMALIZATION.get(metric_name, (0, 1))
+        min_val, max_val = get_normalization(metric_name)
         norm = (raw - min_val) / (max_val - min_val) if max_val > min_val else 0
         norm = max(0.0, min(1.0, norm))
         fingerprint.append(norm)
@@ -736,7 +778,7 @@ def scale_fingerprint(details: dict) -> Tuple[float, ...]:
     # Add scale metric values (normalized)
     for metric_name, _ in details.get('scale_metrics', []):
         raw = details['metric_averages'].get(metric_name, 0)
-        min_val, max_val = METRIC_NORMALIZATION.get(metric_name, (0, 1))
+        min_val, max_val = get_normalization(metric_name)
         norm = (raw - min_val) / (max_val - min_val) if max_val > min_val else 0
         norm = max(0.0, min(1.0, norm))
         fingerprint.append(norm)
@@ -871,7 +913,7 @@ def combined_metric(ratio: Fraction, metrics: List[Tuple[str, float]], normalize
         score = cached_metric(ratio, metric_name)
         
         if normalize:
-            min_val, max_val = METRIC_NORMALIZATION[metric_name]
+            min_val, max_val = get_normalization(metric_name)
             score = (score - min_val) / (max_val - min_val)
             score = max(0.0, min(1.0, score))  # Clamp to [0, 1]
         
@@ -1076,41 +1118,22 @@ def evaluate_scale(scale: List[Fraction],
         # Arithmetic mean: bad intervals can be averaged out
         raw_interval_penalty = sum(interval_scores) / len(interval_scores)
     
-    # Note count normalization - two-stage correction:
+    # Note count normalization:
     # 
-    # Problem: larger scales naturally have worse average interval scores because
-    # they include more complex intervals. Without correction, the optimizer always
-    # prefers fewer notes.
+    # Larger scales naturally have worse average interval scores because they
+    # include more complex intervals. Without correction, the optimizer always
+    # prefers fewer notes when searching across variable note counts.
     #
-    # 1. Penalty scaling: divide penalty by note_count_factor to account for 
-    #    more intervals naturally having higher average dissonance
-    # 2. Empirical correction: additional multiplicative factor based on 
-    #    calibration data to make scores comparable across scale sizes.
-    #    Calibrated against barlow metric with geometric combine method.
-    #    This is approximate — other metric/combine combinations will have
-    #    slightly different bias, but it prevents gross score inflation/deflation
-    #    when searching across variable note counts.
+    # We divide the raw penalty by exp(1 - 1/n) which compensates for the
+    # increasing average dissonance. This brings the quality spread across
+    # note counts down to ~0.05 (e.g. 0.93 for 30-note vs 0.97 for 5-note
+    # random scales), which is a reasonable residual bias: simpler scales
+    # genuinely have better intervals on average.
     
     num_notes = len(scale) + 1  # +1 for 1/1 (2/1 is octave, not separately counted)
     
-    # Stage 1: Penalty scaling (original approach)
     note_count_factor = math.exp(1 - 1/num_notes) if num_notes > 1 else 1.0
     interval_penalty = raw_interval_penalty / note_count_factor
-    
-    # Stage 2: Empirical correction based on calibration
-    # After stage 1, scores still decrease roughly linearly with note count.
-    # Calibration data shows: expected_score â‰ˆ 0.9487 - 0.00795 * n
-    # We normalize to n=7 (heptatonic) as reference.
-    baseline_intercept = 0.9487
-    baseline_slope = -0.00795
-    reference_notes = 7
-    
-    expected_at_n = baseline_intercept + baseline_slope * num_notes
-    expected_at_ref = baseline_intercept + baseline_slope * reference_notes
-    
-    # Clamp to avoid division issues for extreme note counts
-    expected_at_n = max(0.5, min(0.99, expected_at_n))
-    note_count_correction = expected_at_ref / expected_at_n
     
     # Convert to quality (higher = better)
     interval_quality = 1.0 - interval_penalty
@@ -1121,7 +1144,6 @@ def evaluate_scale(scale: List[Fraction],
     quality_scores = []
     scale_metric_scores = {}
     scale_metric_scores['num_notes'] = num_notes
-    scale_metric_scores['note_count_correction'] = note_count_correction
     
     # Interval quality as first component
     interval_weight = sum(w for _, w in metrics)
@@ -1138,7 +1160,7 @@ def evaluate_scale(scale: List[Fraction],
             scale_metric_scores[metric_name] = raw_score
         
         # Normalize to 0-1
-        min_val, max_val = METRIC_NORMALIZATION[metric_name]
+        min_val, max_val = get_normalization(metric_name)
         norm_score = (raw_score - min_val) / (max_val - min_val)
         norm_score = max(0.0, min(1.0, norm_score))
         
@@ -1164,11 +1186,7 @@ def evaluate_scale(scale: List[Fraction],
     else:
         final_quality = interval_quality
     
-    # Apply note count correction to make scores comparable across different scale sizes
-    final_quality = final_quality * note_count_correction
-    final_quality = min(1.0, final_quality)  # Cap at 1.0
-    
-    # Fitness = quality (higher = better, range roughly 0-1)
+    # Fitness = quality (higher = better, range 0-1)
     fitness = final_quality
     
     metric_avgs = {name: sum(scores) / len(scores) if scores else 0 
@@ -1178,10 +1196,9 @@ def evaluate_scale(scale: List[Fraction],
     details = {
         'intervals': [],
         'avg_score': 1.0 - final_quality,  # For backward compat: lower = better
-        'quality': final_quality,  # New: higher = better
+        'quality': final_quality,  # Higher = better, range 0-1
         'interval_quality': interval_quality,
         'raw_interval_penalty': raw_interval_penalty,
-        'note_count_correction': note_count_correction,
         'min_score': min(interval_scores) if interval_scores else 0,
         'max_score': max(interval_scores) if interval_scores else 0,
         'metrics': metrics,
@@ -2235,6 +2252,10 @@ def evolve(config: SearchConfig, verbose: bool = True,
                     If None, uses default seeds. If empty list [], uses no seeds.
     """
     candidates, candidate_weights = generate_candidate_ratios(config.ratio_limit)
+    
+    # Compute normalization ranges from actual candidates
+    init_normalization(config.ratio_limit)
+    
     metrics = config.metrics
     scale_metrics = config.scale_metrics
     octave_range = config.octave_range
@@ -2637,10 +2658,14 @@ def print_interval_matrix(scale: List[Fraction], metrics: List[Tuple[str, float]
         print(row)
 
 
-def evaluate_named_scale(name: str, ratios: List[str], metrics: List[Tuple[str, float]] = None,
+def evaluate_named_scale(scale_name: str, ratios: List[str], metrics: List[Tuple[str, float]] = None,
                          octave_range: int = 1, scale_metrics: List[Tuple[str, float]] = None,
                          edo: int = 0, combine_method: str = 'geometric'):
-    """Evaluate and display a specific scale given as string ratios."""
+    """Evaluate and display a specific scale given as string ratios.
+    
+    Note: call init_normalization(ratio_limit) before using this function
+    to ensure metric normalization ranges are set for the relevant ratio limit.
+    """
     if metrics is None:
         metrics = [('tenney', 1.0)]
     if scale_metrics is None:
@@ -2653,7 +2678,7 @@ def evaluate_named_scale(name: str, ratios: List[str], metrics: List[Tuple[str, 
     metric_desc = format_metric_description(metrics, scale_metrics, edo)
     
     print(f"\n{'=' * 60}")
-    print(f"Scale: {name}")
+    print(f"Scale: {scale_name}")
     print("=" * 60)
     print()
     print(format_scale(scale))
@@ -2786,6 +2811,9 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
         print(f"Error: {e}")
         return
     
+    # Compute normalization ranges for the given ratio limit
+    init_normalization(args.ratio_limit)
+    
     if args.compare:
         # Compare some well-known scales
         scales_to_compare = [
@@ -2897,7 +2925,7 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
         print("\nMetric breakdown (0-1, higher=better):")
         for metric_name, weight in metrics:
             raw = details['metric_averages'].get(metric_name, 0)
-            min_val, max_val = METRIC_NORMALIZATION.get(metric_name, (0, 1))
+            min_val, max_val = get_normalization(metric_name)
             normalized = (raw - min_val) / (max_val - min_val)
             normalized = max(0.0, min(1.0, normalized))
             quality = 1.0 - normalized  # Invert: lower raw = higher quality
@@ -2905,7 +2933,7 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
         
         for metric_name, weight in scale_metrics:
             raw = details['metric_averages'].get(metric_name, 0)
-            min_val, max_val = METRIC_NORMALIZATION.get(metric_name, (0, 1))
+            min_val, max_val = get_normalization(metric_name)
             normalized = (raw - min_val) / (max_val - min_val)
             normalized = max(0.0, min(1.0, normalized))
             # 'primes' and 'variety' are positive (higher=better), others are penalties

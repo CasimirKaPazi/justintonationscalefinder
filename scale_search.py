@@ -39,8 +39,8 @@ class SearchConfig:
     Defaults:
         max_notes: 7 (heptatonic)
         min_notes: 3 (minimum viable scale)
-        ratio_limit: 32 (allows up to 31-limit intervals)
-        population_size: 200
+        ratio_limit: 64 (allows up to 31-limit intervals)
+        population_size: 300
         generations: 500
         mutation_rate: 0.3
         tournament_size: 5
@@ -1048,10 +1048,32 @@ def evaluate_scale(scale: List[Fraction],
         # Arithmetic mean: bad intervals can be averaged out
         raw_interval_penalty = sum(interval_scores) / len(interval_scores)
     
-    # Normalize for note count: more notes naturally have higher average scores
+    # Note count normalization - two-stage correction:
+    # 1. Penalty scaling: divide penalty by note_count_factor to account for 
+    #    more intervals naturally having higher average dissonance
+    # 2. Empirical correction: additional multiplicative factor based on 
+    #    calibration data to make scores comparable across scale sizes
+    
     num_notes = len(scale) + 1  # +1 for 1/1 (2/1 is octave, not separately counted)
+    
+    # Stage 1: Penalty scaling (original approach)
     note_count_factor = math.exp(1 - 1/num_notes) if num_notes > 1 else 1.0
     interval_penalty = raw_interval_penalty / note_count_factor
+    
+    # Stage 2: Empirical correction based on calibration
+    # After stage 1, scores still decrease roughly linearly with note count.
+    # Calibration data shows: expected_score ≈ 0.9487 - 0.00795 * n
+    # We normalize to n=7 (heptatonic) as reference.
+    baseline_intercept = 0.9487
+    baseline_slope = -0.00795
+    reference_notes = 7
+    
+    expected_at_n = baseline_intercept + baseline_slope * num_notes
+    expected_at_ref = baseline_intercept + baseline_slope * reference_notes
+    
+    # Clamp to avoid division issues for extreme note counts
+    expected_at_n = max(0.5, min(0.99, expected_at_n))
+    note_count_correction = expected_at_ref / expected_at_n
     
     # Convert to quality (higher = better)
     interval_quality = 1.0 - interval_penalty
@@ -1062,7 +1084,7 @@ def evaluate_scale(scale: List[Fraction],
     quality_scores = []
     scale_metric_scores = {}
     scale_metric_scores['num_notes'] = num_notes
-    scale_metric_scores['note_count_factor'] = note_count_factor
+    scale_metric_scores['note_count_correction'] = note_count_correction
     
     # Interval quality as first component
     interval_weight = sum(w for _, w in metrics)
@@ -1105,6 +1127,10 @@ def evaluate_scale(scale: List[Fraction],
     else:
         final_quality = interval_quality
     
+    # Apply note count correction to make scores comparable across different scale sizes
+    final_quality = final_quality * note_count_correction
+    final_quality = min(1.0, final_quality)  # Cap at 1.0
+    
     # Fitness = quality (higher = better, range roughly 0-1)
     fitness = final_quality
     
@@ -1117,8 +1143,8 @@ def evaluate_scale(scale: List[Fraction],
         'avg_score': 1.0 - final_quality,  # For backward compat: lower = better
         'quality': final_quality,  # New: higher = better
         'interval_quality': interval_quality,
-        'interval_penalty': interval_penalty,
         'raw_interval_penalty': raw_interval_penalty,
+        'note_count_correction': note_count_correction,
         'min_score': min(interval_scores) if interval_scores else 0,
         'max_score': max(interval_scores) if interval_scores else 0,
         'metrics': metrics,

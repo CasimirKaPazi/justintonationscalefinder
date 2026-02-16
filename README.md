@@ -1,6 +1,8 @@
-# Just Intonation Scale Evolution
+# Evolutionary Search for Just Intonation Scales
 
-Evolutionary search for microtonal scales using multiple consonance metrics.
+Uses an evolutionary algorithm to search for microtonal just intonation scales by various music theoretic constraints.
+
+This was created with Claude (Anthropic).
 
 ## Features
 
@@ -32,7 +34,7 @@ python scale_search.py --notes 7
 python scale_search.py --list-metrics
 
 # Combine multiple metrics
-python scale_search.py --metric "soft_tenney:1,roughness:0.5,balance:0.2" --notes 7
+python scale_search.py --metric "wilson:1,barlow:1,propriety:1,variety:0.1,entropy:0.5" --combine geometric --notes 7
 
 # Require specific intervals
 python scale_search.py --notes 7 --include "3/2,4/3"
@@ -41,7 +43,7 @@ python scale_search.py --notes 7 --include "3/2,4/3"
 python scale_search.py --metric "soft_tenney:1,edo19:2" --notes 19
 
 # Elaborate search with various settings
-python scale_search.py --metric "euler:1,wilson:1,odd_limit:1,propriety:1,barlow:1,entropy:1,balance:0.2" --population 500 --octaves 2 --ratio-limit 64 --min-notes 12 --max-notes 16 --include "7/6" --seeds seeds.txt
+python scale_search.py --metric "wilson:1,barlow:1,propriety:1,variety:0.1,entropy:0.5,roughness:0.5" --population 500 --octaves 2 --min-notes 12 --max-notes 16 --include "7/6" --seeds seeds.txt
 ```
 
 ## Metrics
@@ -61,7 +63,7 @@ python scale_search.py --metric "euler:1,wilson:1,odd_limit:1,propriety:1,barlow
 ### Scale Metrics
 | Metric | Description |
 |--------|-------------|
-| `steps` | Penalizes clustered notes (obsolete, better use balance) |
+| `steps` | Penalizes clustered notes |
 | `balance` | Step size evenness (coefficient of variation) |
 | `propriety` | Rothenberg propriety (interval class overlap) |
 | `primes` | Rewards prime diversity (better use variety) |
@@ -79,9 +81,13 @@ The `--combine` option controls how individual interval scores are combined (in 
 | `power2` | Power mean (p=2, RMS). Emphasizes bad intervals more than arithmetic mean. |
 | `power3` | Power mean (p=3). Even stricter than p=2. |
 | `logloss` | Log loss. Heavily penalizes near-dissonant intervals — a 0.9 penalty hurts much more than two 0.45s. |
-| `worst` | Minimax. Optimizes the worst interval. Most demanding — no bad intervals tolerated. |
+| `worst` | Minimax. Optimizes the worst interval. Most demanding — no bad intervals tolerated. Diverges the most from the others. |
 
-## Seed File Format
+## Seed File
+
+Specify a seed file with `--seeds`
+
+Format:
 
 ```
 ! Scale Name
@@ -125,7 +131,8 @@ The tool outputs:
 
 ## Tips
 
-- Increasing `min_notes`, `ratio_limit`, `octaves` and `generations` slow down search quite a lot.
+- Increasing `min_notes`, `ratio_limit`, `octaves` and `generations` slows down search quite a lot.
+- Using the seeds.txt file reduces search time. Most settings converge on the same scales anyway.
 - The `entropy` and `roughness` metrics are also slow, and usually you don't need more than one of those two, as they are quite similar.
 - Using `entropy` or `roughness` also tends to cluster the notes in a few places. To balance this out you can use `balance`. But I recommend starting with a low value (e.g. `balance:0.05`) and increase when needed.
 - Using the `primes` metric can lead to more interesting scales, but is better used with low weight (e.g. `primes:0.3`). Even better to use `variety`.
@@ -138,7 +145,5 @@ The tool outputs:
 GPL-3.0
 
 ## Development
-
-This was created with Claude (Anthropic).
 
 I won't develop it further and won't merge pull requests, just because I don't want the work of maintaining this project. If you want to contribute, then just fork the repo and publish your changes.

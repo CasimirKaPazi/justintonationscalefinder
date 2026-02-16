@@ -39,8 +39,8 @@ class SearchConfig:
     Defaults:
         max_notes: 7 (heptatonic)
         min_notes: 3 (minimum viable scale)
-        ratio_limit: 32 (allows up to 31-limit intervals)
-        population_size: 200
+        ratio_limit: 64
+        population_size: 300
         generations: 500
         mutation_rate: 0.3
         tournament_size: 5
@@ -76,7 +76,7 @@ class SearchConfig:
     
     def __post_init__(self):
         if self.metrics is None:
-            self.metrics = [('tenney', 1.0)]
+            self.metrics = [('barlow', 1.0)]
         if self.scale_metrics is None:
             self.scale_metrics = []
         if self.required_notes is None:

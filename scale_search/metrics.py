@@ -355,21 +355,8 @@ def barlow_harmonicity(ratio: Fraction) -> float:
         """Barlow's indigestibility of an integer."""
         if n <= 1:
             return 0
-        
-        result = 0
-        temp = n
-        p = 2
-        while p * p <= temp:
-            while temp % p == 0:
-                # Each prime factor p contributes 2*(p-1)^2/p
-                result += 2 * (p - 1) ** 2 / p
-                temp //= p
-            p += 1
-        if temp > 1:
-            # Remaining prime factor
-            result += 2 * (temp - 1) ** 2 / temp
-        
-        return result
+        # Each prime factor p with exponent e contributes e * 2*(p-1)^2/p
+        return sum(e * 2 * (p - 1) ** 2 / p for p, e in prime_factors(n))
     
     return indigestibility(ratio.numerator) + indigestibility(ratio.denominator)
 
@@ -439,9 +426,9 @@ def scale_propriety(scale: List[Fraction]) -> float:
     full_scale = [Fraction(1, 1)] + sorted(scale) + [Fraction(2, 1)]
     n = len(full_scale) - 1  # Number of scale degrees (not counting octave)
     
-    # Calculate all intervals by step count
-    # intervals_by_steps[k] = list of interval sizes (in cents) spanning k steps
-    intervals_by_steps = {}
+    # Track only min and max interval size per step count (no list allocation)
+    # intervals_range[k] = (min_cents, max_cents) for intervals spanning k steps
+    intervals_range = {}
     
     for i in range(len(full_scale) - 1):
         for j in range(i + 1, len(full_scale)):
@@ -450,16 +437,22 @@ def scale_propriety(scale: List[Fraction]) -> float:
             # Don't octave reduce - we want actual interval sizes within the octave
             cents = 1200 * math.log2(float(interval))
             
-            if steps not in intervals_by_steps:
-                intervals_by_steps[steps] = []
-            intervals_by_steps[steps].append(cents)
+            if steps in intervals_range:
+                mn, mx = intervals_range[steps]
+                if cents < mn:
+                    mn = cents
+                if cents > mx:
+                    mx = cents
+                intervals_range[steps] = (mn, mx)
+            else:
+                intervals_range[steps] = (cents, cents)
     
     # Check for propriety violations
     # Compare max of k-step intervals with min of (k+1)-step intervals
     violations = 0.0
     total_comparisons = 0
     
-    step_counts = sorted(intervals_by_steps.keys())
+    step_counts = sorted(intervals_range.keys())
     for i in range(len(step_counts) - 1):
         k = step_counts[i]
         k_next = step_counts[i + 1]
@@ -467,8 +460,8 @@ def scale_propriety(scale: List[Fraction]) -> float:
         if k_next != k + 1:
             continue  # Skip if not consecutive step classes
         
-        max_k = max(intervals_by_steps[k])
-        min_k_next = min(intervals_by_steps[k_next])
+        max_k = intervals_range[k][1]
+        min_k_next = intervals_range[k_next][0]
         
         total_comparisons += 1
         

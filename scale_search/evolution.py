@@ -26,7 +26,8 @@ def evaluate_scale(scale: List[Fraction],
                    interval_cache: dict = None,
                    scale_metrics: List[Tuple[str, float]] = None,
                    edo: int = 0,
-                   combine_method: str = 'geometric') -> Tuple[float, dict]:
+                   combine_method: str = 'geometric',
+                   metric_value_cache: dict = None) -> Tuple[float, dict]:
     """
     Evaluate a scale's quality using the specified metric(s).
     Returns (fitness, details) where higher fitness = better scale.
@@ -35,7 +36,8 @@ def evaluate_scale(scale: List[Fraction],
         metrics: List of (metric_name, weight) tuples for interval evaluation
         scale_metrics: List of (metric_name, weight) tuples for whole-scale properties
         octave_range: How many octaves above/below to consider
-        interval_cache: Optional precomputed {(n,d): score} lookup for fast evaluation
+        interval_cache: Optional {(n,d): combined_score} for fast interval lookup
+        metric_value_cache: Optional {(n,d,metric_name): raw_value} for individual metrics
         edo: If > 0, penalize notes far from this EDO's steps (for neji scales)
         combine_method: How to combine interval scores:
             'geometric' - geometric mean (default): one bad interval pulls down score
@@ -84,15 +86,13 @@ def evaluate_scale(scale: List[Fraction],
             g = math.gcd(int_n, int_d)
             int_n, int_d = int_n // g, int_d // g
             
-            # Reduce to single octave
+            # Reduce to single octave (GCD once at the end)
             while int_n >= 2 * int_d:
                 int_d *= 2
-                g = math.gcd(int_n, int_d)
-                int_n, int_d = int_n // g, int_d // g
             while int_n < int_d:
                 int_n *= 2
-                g = math.gcd(int_n, int_d)
-                int_n, int_d = int_n // g, int_d // g
+            g = math.gcd(int_n, int_d)
+            int_n, int_d = int_n // g, int_d // g
             
             key = (int_n, int_d)
             
@@ -101,9 +101,11 @@ def evaluate_scale(scale: List[Fraction],
                 if key in interval_cache:
                     score = interval_cache[key]
                     interval_scores.append(score)
-                    for name, _ in metrics:
-                        if (key, name) in interval_cache:
-                            individual_scores[name].append(interval_cache[(key, name)])
+                    if metric_value_cache is not None:
+                        for name, _ in metrics:
+                            mv_key = (int_n, int_d, name)
+                            if mv_key in metric_value_cache:
+                                individual_scores[name].append(metric_value_cache[mv_key])
                 else:
                     # Compute and cache
                     interval = Fraction(int_n, int_d)
@@ -112,7 +114,8 @@ def evaluate_scale(scale: List[Fraction],
                     interval_scores.append(score)
                     for name, _ in metrics:
                         val = cached_metric(interval, name)
-                        interval_cache[(key, name)] = val
+                        if metric_value_cache is not None:
+                            metric_value_cache[(int_n, int_d, name)] = val
                         individual_scores[name].append(val)
             else:
                 interval = Fraction(int_n, int_d)
@@ -337,61 +340,6 @@ def tournament_select(population: List[Tuple[float, List[Fraction]]], k: int) ->
     return winner[1]
 
 
-def select_elites(population: List[Tuple[float, List[Fraction]]], 
-                  n_elites: int) -> List[Tuple[float, List[Fraction]]]:
-    """
-    Select elite individuals with increasing randomness.
-    
-    First elite is always the best (greedy). Subsequent elites are sampled
-    from an increasingly large window of top candidates, introducing more
-    randomness for lower-ranked selections while avoiding duplicates.
-    
-    This provides natural diversity without expensive similarity calculations.
-    """
-    if n_elites <= 0 or not population:
-        return []
-    
-    # Sort by fitness
-    sorted_pop = sorted(population, key=lambda x: x[0], reverse=True)
-    
-    elites = []
-    seen_scales = set()
-    
-    for k in range(n_elites):
-        # Window size grows: 1, 3, 6, 10, 15... (triangular numbers give smooth growth)
-        # Or simpler: 1, 4, 8, 12, 16... (1 + 4*k)
-        window_size = min(1 + 4 * k, len(sorted_pop))
-        
-        # Find candidates in window that aren't duplicates
-        candidates = []
-        for ind in sorted_pop[:window_size]:
-            scale_key = frozenset((r.numerator, r.denominator) for r in ind[1])
-            if scale_key not in seen_scales:
-                candidates.append(ind)
-        
-        if candidates:
-            if k == 0:
-                # First one is always the best
-                chosen = candidates[0]
-            else:
-                # Random from available candidates in window
-                chosen = random.choice(candidates)
-            
-            elites.append(chosen)
-            scale_key = frozenset((r.numerator, r.denominator) for r in chosen[1])
-            seen_scales.add(scale_key)
-        else:
-            # All in window are duplicates, try rest of population
-            for ind in sorted_pop[window_size:]:
-                scale_key = frozenset((r.numerator, r.denominator) for r in ind[1])
-                if scale_key not in seen_scales:
-                    elites.append(ind)
-                    seen_scales.add(scale_key)
-                    break
-    
-    return elites
-
-
 def select_elites_diverse(population: List[Tuple[float, List[Fraction]]],
                           n_elites: int,
                           get_fingerprint_fn) -> List[Tuple[float, List[Fraction]]]:
@@ -493,6 +441,9 @@ def evolve(config: SearchConfig, verbose: bool = True,
     candidate_cents = [(1200 * math.log2(float(c)), i) for i, c in enumerate(candidates)]
     candidate_cents.sort()  # Sort by cents value
     
+    # Ratio -> weight lookup for O(1) access (used when extending short seed scales)
+    candidate_weight_map = {c: w for c, w in zip(candidates, candidate_weights)}
+    
     # Build metric description string
     metric_desc = format_metric_description(metrics, scale_metrics, edo)
     
@@ -511,9 +462,10 @@ def evolve(config: SearchConfig, verbose: bool = True,
             print(f"Excluded notes: {', '.join(str(r) for r in excluded_notes)}")
         print()
     
-    # Lazy interval cache - compute on demand instead of precomputing all pairs
-    # This avoids O(nÂ²) precomputation which becomes prohibitive for large ratio limits
-    interval_cache = {}
+    # Lazy interval caches - compute on demand instead of precomputing all pairs
+    # This avoids O(n²) precomputation which becomes prohibitive for large ratio limits
+    interval_cache = {}       # (n, d) -> combined score
+    metric_value_cache = {}   # (n, d, metric_name) -> raw metric value
     
     # Scale fitness cache: frozenset of (n,d) tuples -> fitness
     scale_cache = {}
@@ -525,7 +477,7 @@ def evolve(config: SearchConfig, verbose: bool = True,
         """Evaluate scale and cache both fitness and fingerprint."""
         key = frozenset((r.numerator, r.denominator) for r in scale)
         if key not in scale_cache:
-            fitness, details = evaluate_scale(scale, metrics, octave_range, interval_cache, scale_metrics, edo, combine_method)
+            fitness, details = evaluate_scale(scale, metrics, octave_range, interval_cache, scale_metrics, edo, combine_method, metric_value_cache)
             scale_cache[key] = fitness
             fingerprint_cache[key] = scale_fingerprint(details)
         return scale_cache[key]
@@ -585,8 +537,8 @@ def evolve(config: SearchConfig, verbose: bool = True,
                             if c not in scale_set and c not in excluded_notes]
                 num_to_add = target_len - len(scale)
                 if len(available) >= num_to_add:
-                    # Weight toward simpler ratios
-                    available_weights = [candidate_weights[candidates.index(c)] 
+                    # Weight toward simpler ratios (O(1) lookup via dict)
+                    available_weights = [candidate_weight_map.get(c, 0.001) 
                                         for c in available]
                     additions = []
                     for _ in range(num_to_add):
@@ -678,8 +630,7 @@ def evolve(config: SearchConfig, verbose: bool = True,
         if stagnation_counter > 30:
             if verbose:
                 best_quality = best_ever[0]
-                num_intervals = sum(1 for k in interval_cache if isinstance(k, tuple) and len(k) == 2 and isinstance(k[0], int))
-                print(f"Gen {gen:4d}: converged (no improvement for 30 gens), best quality = {best_quality:.4f}, intervals = {num_intervals}")
+                print(f"Gen {gen:4d}: converged (no improvement for 30 gens), best quality = {best_quality:.4f}, cached intervals = {len(interval_cache)}")
             break
         
         # Adaptive mutation rate (increase when stagnating)
@@ -837,7 +788,7 @@ def evolve(config: SearchConfig, verbose: bool = True,
     
     # Return best found
     best_fitness, best_scale = best_ever
-    _, details = evaluate_scale(best_scale, metrics, octave_range, interval_cache, scale_metrics, edo, combine_method)
+    _, details = evaluate_scale(best_scale, metrics, octave_range, interval_cache, scale_metrics, edo, combine_method, metric_value_cache)
     return sorted(best_scale), best_fitness, details
 
 

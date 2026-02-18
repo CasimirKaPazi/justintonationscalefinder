@@ -5,6 +5,7 @@ All interval metrics take a Fraction and return a float where lower = more conso
 Scale metrics take a list of Fractions (the scale) and return a float.
 """
 
+import heapq
 import math
 import re
 from fractions import Fraction
@@ -484,17 +485,20 @@ def scale_variety(scale: List[Fraction]) -> float:
     
     Returns 1 - (total_similarity / max_possible_similarity).
     
-    The kernel width Ïƒ = 10 cents is motivated by the Just Noticeable Difference
+    The kernel width σ = 10 cents is motivated by the Just Noticeable Difference
     (JND) for melodic pitch - intervals within ~10 cents are perceptually similar.
     
     This is smooth and principled:
-    - 3/2 (702Â¢) and 301/200 (707Â¢) contribute high similarity (low variety)
-    - 3/2 (702Â¢) and 7/5 (583Â¢) contribute negligible similarity (high variety)
+    - 3/2 (702¢) and 301/200 (707¢) contribute high similarity (low variety)
+    - 3/2 (702¢) and 7/5 (583¢) contribute negligible similarity (high variety)
     - No hard thresholds - similarity falls off smoothly with distance
+    
+    After sorting, only nearby pairs need comparison since the Gaussian kernel
+    decays to negligible values beyond ~5σ = 50 cents.
     
     Examples:
     - Hexany: ~0.98 (all intervals perceptually distinct)
-    - Major scale: ~0.95 (some intervals cluster, e.g. multiple ~200Â¢)
+    - Major scale: ~0.95 (some intervals cluster, e.g. multiple ~200¢)
     """
     if len(scale) < 1:
         return 1.0
@@ -519,14 +523,23 @@ def scale_variety(scale: List[Fraction]) -> float:
     
     # Gaussian kernel width based on JND (~10 cents)
     sigma = 10.0
+    two_sigma_sq = 2 * sigma * sigma
     
-    # Sum pairwise similarities
+    # Sort so we can skip distant pairs early.
+    # At 5σ = 50 cents, similarity = exp(-25/2) ≈ 3.7e-6, negligible.
+    cutoff = 5.0 * sigma
+    
+    interval_cents.sort()
+    
+    # Sum pairwise similarities (only nearby pairs contribute)
     total_similarity = 0.0
     for i in range(n):
+        ci = interval_cents[i]
         for j in range(i + 1, n):
-            dist = abs(interval_cents[i] - interval_cents[j])
-            similarity = math.exp(-dist * dist / (2 * sigma * sigma))
-            total_similarity += similarity
+            dist = interval_cents[j] - ci  # Already sorted, so dist >= 0
+            if dist > cutoff:
+                break  # All subsequent j are even farther
+            total_similarity += math.exp(-dist * dist / two_sigma_sq)
     
     # Maximum similarity if all intervals identical
     max_similarity = n * (n - 1) / 2
@@ -674,12 +687,9 @@ def fingerprint_diversity_score(fingerprint: Tuple[float, ...],
     if not population_fingerprints:
         return 1.0  # Maximum diversity if no population yet
     
-    # Compute distances to all population members
+    # Compute distances to all population members, keep only k smallest
     distances = [fingerprint_distance(fingerprint, fp) for fp in population_fingerprints]
-    
-    # Average distance to k nearest (excluding self if present)
-    distances.sort()
-    k_nearest = distances[:min(k, len(distances))]
+    k_nearest = heapq.nsmallest(min(k, len(distances)), distances)
     
     if not k_nearest:
         return 1.0

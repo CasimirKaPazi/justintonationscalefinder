@@ -1,5 +1,6 @@
 """Search configuration."""
 
+import random
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import List, Set, Tuple
@@ -60,7 +61,35 @@ class SearchConfig:
             self.excluded_notes = set(self.excluded_notes)
         if self.min_notes > self.max_notes:
             self.min_notes, self.max_notes = self.max_notes, self.min_notes
-        if self.fixed_notes and len(self.required_notes) > self.fixed_notes - 1:
+        if self.fixed_notes is not None and len(self.required_notes) > self.fixed_notes - 1:
             raise ValueError(f"Too many required notes ({len(self.required_notes)}) for {self.fixed_notes}-note scale")
         if len(self.required_notes) > self.max_notes - 1:
             raise ValueError(f"Too many required notes ({len(self.required_notes)}) for max {self.max_notes}-note scale")
+    
+    def target_num_ratios(self) -> int:
+        """
+        Return the target number of ratios for a scale.
+        
+        If fixed_notes is set, returns fixed_notes - 1.
+        Otherwise, returns a random value in [min_notes - 1, max_notes - 1].
+        """
+        if self.fixed_notes is not None:
+            return self.fixed_notes - 1
+        return random.randint(self.min_notes - 1, self.max_notes - 1)
+    
+    def check_constraints(self, scale) -> bool:
+        """
+        Check if a scale satisfies required/excluded note constraints.
+        
+        Args:
+            scale: List or set of Fraction ratios (not including 1/1 or 2/1)
+        
+        Returns:
+            True if all required notes are present and no excluded notes are present.
+        """
+        scale_set = set(scale)
+        if self.required_notes and not all(r in scale_set for r in self.required_notes):
+            return False
+        if self.excluded_notes and any(e in scale_set for e in self.excluded_notes):
+            return False
+        return True

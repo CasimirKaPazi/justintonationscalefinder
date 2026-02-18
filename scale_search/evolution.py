@@ -447,7 +447,7 @@ def evolve(config: SearchConfig, verbose: bool = True,
     # Build metric description string
     metric_desc = format_metric_description(metrics, scale_metrics, edo)
     
-    note_desc = f"exactly {config.fixed_notes}" if config.fixed_notes else f"up to {config.max_notes}"
+    note_desc = f"exactly {config.fixed_notes}" if config.fixed_notes is not None else f"up to {config.max_notes}"
     octave_desc = f"{2 * octave_range + 1} octaves" if octave_range > 0 else "1 octave"
     
     # Note constraints
@@ -497,15 +497,6 @@ def evolve(config: SearchConfig, verbose: bool = True,
     # Note: N notes = N-1 ratios (tonic 1/1 is implicit, octave 2/1 is repeat)
     population = []
     
-    def check_constraints(scale):
-        """Check if scale satisfies required/excluded constraints."""
-        scale_set = set(scale)
-        if not all(r in scale_set for r in required_notes):
-            return False
-        if any(e in scale_set for e in excluded_notes):
-            return False
-        return True
-    
     def add_scale_if_valid(scale, target_len=None):
         """Add scale to population if it meets size and constraint requirements.
         
@@ -515,7 +506,7 @@ def evolve(config: SearchConfig, verbose: bool = True,
         # Sanitize: ensure all ratios are within octave, no duplicates
         scale = sanitize_scale(scale)
         
-        if not scale or not check_constraints(scale):
+        if not scale or not config.check_constraints(scale):
             return
         
         if target_len is not None:
@@ -556,7 +547,7 @@ def evolve(config: SearchConfig, verbose: bool = True,
                                 available_weights.pop(idx)
                                 break
                     expanded = list(scale) + additions
-                    if check_constraints(expanded):
+                    if config.check_constraints(expanded):
                         fitness = eval_scale_cached(expanded)
                         population.append((fitness, expanded))
         else:
@@ -565,7 +556,7 @@ def evolve(config: SearchConfig, verbose: bool = True,
                 population.append((fitness, list(scale)))
     
     # Add seed scales and their transformations
-    target_len = config.fixed_notes - 1 if config.fixed_notes else None
+    target_len = config.fixed_notes - 1 if config.fixed_notes is not None else None
     
     for seed in seed_scales:
         # Original seed
@@ -584,10 +575,7 @@ def evolve(config: SearchConfig, verbose: bool = True,
     
     # Fill rest with random scales (biased toward simpler ratios)
     while len(population) < config.population_size:
-        if config.fixed_notes:
-            num_ratios = config.fixed_notes - 1
-        else:
-            num_ratios = random.randint(config.min_notes - 1, config.max_notes - 1)
+        num_ratios = config.target_num_ratios()
         scale = create_random_scale(candidates, num_ratios, candidate_weights,
                                     required=required_notes, excluded=excluded_notes)
         fitness = eval_scale_cached(scale)
@@ -673,10 +661,7 @@ def evolve(config: SearchConfig, verbose: bool = True,
         if stagnation_counter > 10:
             num_random_inject = min(config.population_size // 5, stagnation_counter)  # Up to 20% random
             for _ in range(num_random_inject):
-                if config.fixed_notes:
-                    num_ratios = config.fixed_notes - 1
-                else:
-                    num_ratios = random.randint(config.min_notes - 1, config.max_notes - 1)
+                num_ratios = config.target_num_ratios()
                 fresh = create_random_scale(candidates, num_ratios, candidate_weights,
                                            required=required_notes, excluded=excluded_notes)
                 fitness = eval_scale_cached(fresh)
@@ -717,11 +702,11 @@ def evolve(config: SearchConfig, verbose: bool = True,
             
             if random.random() < 0.03:  # 3% chance to invert
                 inverted = scale_invert(child, config.ratio_limit)
-                if (inverted and len(inverted) == target_len and check_constraints(inverted)):
+                if (inverted and len(inverted) == target_len and config.check_constraints(inverted)):
                     child = inverted
             elif random.random() < 0.05:  # ~5% chance to rotate
                 rotated = scale_rotate(child, limit=config.ratio_limit)
-                if (rotated and len(rotated) == target_len and check_constraints(rotated)):
+                if (rotated and len(rotated) == target_len and config.check_constraints(rotated)):
                     child = rotated
             
             raw_fitness = eval_scale_cached(child)
@@ -744,10 +729,7 @@ def evolve(config: SearchConfig, verbose: bool = True,
                 accept_prob = math.exp(-delta / temperature) if temperature > 0 else 0
                 if random.random() > accept_prob:
                     if random.random() < 0.3:
-                        if config.fixed_notes:
-                            num_ratios = config.fixed_notes - 1
-                        else:
-                            num_ratios = random.randint(config.min_notes - 1, config.max_notes - 1)
+                        num_ratios = config.target_num_ratios()
                         child = create_random_scale(candidates, num_ratios, candidate_weights,
                                                     required=required_notes, excluded=excluded_notes)
                         raw_fitness = eval_scale_cached(child)

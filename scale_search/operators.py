@@ -216,13 +216,19 @@ def scale_rotate(scale: List[Fraction], pivot_idx: int = None, limit: int = None
 
 def mutate(scale: List[Fraction], candidates: List[Fraction], config: SearchConfig) -> List[Fraction]:
     """
-    Mutate a scale using musically-meaningful operations:
+    Mutate a scale using musically-meaningful operations.
+    
+    Selects a mutation type by weighted random roll, tries it, and falls through
+    to the next type if it fails (e.g., result exceeds ratio limit). The fallback
+    chain ensures we almost always produce a mutation.
+    
+    Operations (in fallback order):
     1. Transpose a note by a simple interval (fifth, third, seventh, etc.)
     2. Comma shift (subtle pitch adjustment by syntonic/septimal comma)
     3. Combine two notes from the scale (like La Monte Young's 1323/1024)
-    4. Stack intervals La Monte Young style (7/4 Ã— 7/4 Ã— 3/2 Ã— 3/2...)
+    4. Stack intervals La Monte Young style (7/4 × 7/4 × 3/2 × 3/2...)
     5. Mediant - create ratio "between" two scale notes
-    6. Random replacement from candidates (fallback)
+    6. Random replacement from candidates (final fallback)
     
     Respects config.required_notes (won't remove) and config.excluded_notes (won't add).
     """
@@ -237,8 +243,8 @@ def mutate(scale: List[Fraction], candidates: List[Fraction], config: SearchConf
     if not mutable_indices:
         return scale  # All notes are required, can't mutate
     
-    def try_add_note(new_note, idx):
-        """Helper: replace note at idx if new_note is valid and not excluded."""
+    def try_replace(new_note, idx):
+        """Replace note at idx if new_note is valid and not excluded."""
         if (new_note and 
             new_note not in scale_set and 
             new_note not in excluded_set and
@@ -248,50 +254,66 @@ def mutate(scale: List[Fraction], candidates: List[Fraction], config: SearchConf
             return True
         return False
     
-    # Choose mutation type
+    # Build fallback chain based on initial random roll.
+    # Each mutation type has a probability threshold; we try the selected type
+    # and all subsequent types until one succeeds.
     r = random.random()
     
-    if r < 0.18 and mutable_indices:
-        # Transpose by simple interval
-        idx = random.choice(mutable_indices)
-        if try_add_note(mutate_transpose(scale[idx], limit), idx):
-            return scale
+    # Determine starting point in fallback chain
+    if r < 0.18:
+        start = 0   # Start with transpose
+    elif r < 0.30:
+        start = 1   # Start with comma shift
+    elif r < 0.48:
+        start = 2   # Start with combine
+    elif r < 0.62:
+        start = 3   # Start with stack
+    elif r < 0.74:
+        start = 4   # Start with mediant
+    else:
+        start = 5   # Skip to random replacement
     
-    if r < 0.30 and mutable_indices:
-        # Comma shift (subtle pitch adjustment)
+    # Try each operation from starting point onwards
+    for op in range(start, 6):
         idx = random.choice(mutable_indices)
-        if try_add_note(mutate_comma_shift(scale[idx], limit), idx):
-            return scale
-    
-    if r < 0.48 and len(scale) >= 2 and mutable_indices:
-        # Combine two scale notes
-        idx = random.choice(mutable_indices)
-        note1 = scale[idx]
-        others = [n for n in scale if n != note1]
-        note2 = random.choice(others) if others else note1
-        if try_add_note(mutate_combine(note1, note2, limit), idx):
-            return scale
-    
-    if r < 0.62 and mutable_indices:
-        # La Monte Young style interval stacking
-        idx = random.choice(mutable_indices)
-        if try_add_note(mutate_stack(scale, limit), idx):
-            return scale
-    
-    if r < 0.74 and len(scale) >= 2 and mutable_indices:
-        # Mediant of two scale notes
-        idx = random.choice(mutable_indices)
-        note1 = scale[idx]
-        others = [n for n in scale if n != note1]
-        note2 = random.choice(others) if others else note1
-        if try_add_note(mutate_mediant(note1, note2, limit), idx):
-            return scale
-    
-    # Fallback: random replacement from candidates (excluding excluded notes)
-    available = [c for c in candidates if c not in scale_set and c not in excluded_set]
-    if mutable_indices and available:
-        idx = random.choice(mutable_indices)
-        scale[idx] = random.choice(available)
+        
+        if op == 0:
+            # Transpose by simple interval
+            if try_replace(mutate_transpose(scale[idx], limit), idx):
+                return scale
+        
+        elif op == 1:
+            # Comma shift (subtle pitch adjustment)
+            if try_replace(mutate_comma_shift(scale[idx], limit), idx):
+                return scale
+        
+        elif op == 2 and len(scale) >= 2:
+            # Combine two scale notes
+            note1 = scale[idx]
+            others = [n for n in scale if n != note1]
+            note2 = random.choice(others) if others else note1
+            if try_replace(mutate_combine(note1, note2, limit), idx):
+                return scale
+        
+        elif op == 3:
+            # La Monte Young style interval stacking
+            if try_replace(mutate_stack(scale, limit), idx):
+                return scale
+        
+        elif op == 4 and len(scale) >= 2:
+            # Mediant of two scale notes
+            note1 = scale[idx]
+            others = [n for n in scale if n != note1]
+            note2 = random.choice(others) if others else note1
+            if try_replace(mutate_mediant(note1, note2, limit), idx):
+                return scale
+        
+        elif op == 5:
+            # Final fallback: random replacement from candidates
+            available = [c for c in candidates if c not in scale_set and c not in excluded_set]
+            if available:
+                scale[idx] = random.choice(available)
+                return scale
     
     return scale
 
@@ -310,33 +332,25 @@ def crossover_uniform(parent1: List[Fraction], parent2: List[Fraction], config: 
     combined = combined | required  # Add back any required notes
     combined = list(combined)
     
-    # Convert note count to ratio count: N notes = N-1 ratios
-    if config.fixed_notes:
-        num_ratios = config.fixed_notes - 1
-        if len(combined) < num_ratios:
-            return parent1.copy()
-        # Must keep required, sample rest
-        optional = [n for n in combined if n not in required]
-        num_optional = num_ratios - len(required)
-        if num_optional <= 0:
-            return list(required)[:num_ratios]
-        sampled = list(required) + random.sample(optional, min(num_optional, len(optional)))
-        return sampled
+    num_ratios = config.target_num_ratios()
     
-    max_ratios = config.max_notes - 1
-    min_ratios = config.min_notes - 1
+    if len(combined) < num_ratios:
+        if config.fixed_notes is not None:
+            return parent1.copy()  # Can't meet fixed requirement
+        # Variable notes: just return what we have if it meets minimum
+        if len(combined) >= config.min_notes - 1:
+            return combined
+        return parent1.copy()
     
-    if len(combined) <= max_ratios:
+    if len(combined) == num_ratios:
         return combined
     
-    # Must keep required, sample rest
+    # More notes than target: keep required, sample rest
     optional = [n for n in combined if n not in required]
-    num_ratios = random.randint(min_ratios, max_ratios)
     num_optional = num_ratios - len(required)
     if num_optional <= 0:
         return list(required)[:num_ratios]
-    sampled = list(required) + random.sample(optional, min(num_optional, len(optional)))
-    return sampled
+    return list(required) + random.sample(optional, min(num_optional, len(optional)))
 
 
 def crossover_blend(parent1: List[Fraction], parent2: List[Fraction], config: SearchConfig) -> List[Fraction]:
@@ -356,8 +370,7 @@ def crossover_blend(parent1: List[Fraction], parent2: List[Fraction], config: Se
     i, j = 0, 0
     use_p1 = random.random() < 0.5
     
-    target_len = len(parent1) if config.fixed_notes else random.randint(
-        config.min_notes - 1, config.max_notes - 1)
+    target_len = config.target_num_ratios()
     
     seen = set(required)
     while len(child) < target_len and (i < len(p1_sorted) or j < len(p2_sorted)):
@@ -416,8 +429,7 @@ def crossover_pivot(parent1: List[Fraction], parent2: List[Fraction], config: Se
             seen.add(note)
     
     # Adjust to target length
-    target_len = (config.fixed_notes - 1) if config.fixed_notes else random.randint(
-        config.min_notes - 1, config.max_notes - 1)
+    target_len = config.target_num_ratios()
     
     if len(child) > target_len:
         # Must keep required, sample rest
@@ -476,8 +488,7 @@ def crossover_interval_preserving(parent1: List[Fraction], parent2: List[Fractio
         child = list(child_set)
     
     # Adjust to target length
-    target_len = (config.fixed_notes - 1) if config.fixed_notes else random.randint(
-        config.min_notes - 1, config.max_notes - 1)
+    target_len = config.target_num_ratios()
     
     if len(child) > target_len:
         # Must keep required, sample rest

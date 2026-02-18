@@ -175,7 +175,7 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
     
     # Build descriptions
     metric_desc = format_metric_description(metrics, scale_metrics, edo)
-    note_desc = f"exactly {config.fixed_notes}" if config.fixed_notes else f"{config.min_notes}-{config.max_notes}"
+    note_desc = f"exactly {config.fixed_notes}" if config.fixed_notes is not None else f"{config.min_notes}-{config.max_notes}"
     octave_desc = f"{2 * config.octave_range + 1} octaves" if config.octave_range > 0 else "1 octave"
     
     combine_desc_map = {

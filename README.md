@@ -12,6 +12,8 @@ This was created with Claude (Anthropic).
 - **Evolutionary optimization**: Genetic algorithm with simulated annealing, adaptive mutation, and fingerprint-based diversity
 - **Flexible constraints**: Required/excluded notes, variable note counts, ratio complexity limits
 - **Seed scales**: Initialize from existing scales (Scala .scl format supported)
+- **Multi-run cross-seeding**: Best scales from each run seed the next for better exploration
+- **Multiple output formats**: Human-readable (default), quiet mode, JSON for scripting
 - **Reproducibility**: Optional random seed for deterministic results
 
 ## Installation
@@ -45,6 +47,18 @@ python scale_search.py --metric "soft_tenney:1,edo19:2" --notes 19
 
 # Reproducible, script-friendly output
 python scale_search.py --notes 7 --quiet --random-seed 42
+
+# Machine-readable JSON output
+python scale_search.py --notes 7 --json --random-seed 42
+
+# Multiple runs with cross-seeding (best scales from each run seed the next)
+python scale_search.py --notes 7 --runs 3
+
+# Compare a specific scale
+python scale_search.py --compare "9/8,5/4,4/3,3/2,5/3,15/8" --metric barlow
+
+# Compare all scales in a seed file
+python scale_search.py --compare --seeds seeds.txt --metric barlow
 
 # Elaborate search with various settings
 python scale_search.py --metric "wilson:1,barlow:1,propriety:1,variety:0.1,entropy:0.5,roughness:0.5" --population 500 --octaves 2 --min-notes 12 --max-notes 16 --include "7/6" --seeds seeds.txt
@@ -128,8 +142,10 @@ The tool outputs:
 - Interval matrix showing pairwise consonance
 - Metric breakdown when using multiple metrics
 - Match notification if result equals a seed scale
+- Elapsed time and ETA during search
 
 Use `--quiet` to suppress everything except the quality score and scale ratios.
+Use `--json` for machine-readable output (includes quality, scale ratios, cents, and metric breakdown).
 
 ## Algorithm
 
@@ -143,6 +159,7 @@ Use `--quiet` to suppress everything except the quality score and scale ratios.
 ## Tips
 
 - Increasing `min_notes`, `ratio_limit`, `octaves` and `generations` slows down search quite a lot.
+- It saves computation to do a fast search first with low values of octaves and generations and then refine with refine with higher ones, using the previous result in seeds.
 - Using the seeds.txt file reduces search time. Most settings converge on the same scales anyway.
 - The `entropy` and `roughness` metrics are also slow, and usually you don't need more than one of those two, as they are quite similar.
 - Using `entropy` or `roughness` also tends to cluster the notes in a few places. To balance this out you can use `balance`. But I recommend starting with a low value (e.g. `balance:0.05`) and increase when needed.
@@ -150,7 +167,7 @@ Use `--quiet` to suppress everything except the quality score and scale ratios.
 - Below 7 notes, most combinations of metrics converge on the same scales.
 - Including and excluding notes can be used to steer the result towards an intended flavor.
 - Metric can also be used with negative value.
-- Use `--random-seed N` for reproducible results across runs.
+- You can use `--compare` in conjunction with `--notes` or `--include` to only compare scales that have the specified note count or notes.
 
 ## License
 

@@ -1,5 +1,7 @@
 """CLI entry point for scale search. Run with: python -m scale_search"""
 
+import json
+import math
 import random
 import argparse
 
@@ -13,7 +15,8 @@ from scale_search.metrics import (
 from scale_search.evolution import evolve
 from scale_search.display import (
     load_seed_scales, find_matching_seed,
-    format_scale, print_interval_matrix, evaluate_named_scale,
+    format_scale, print_interval_matrix,
+    evaluate_named_scale, print_scale_details,
 )
 
 
@@ -28,8 +31,11 @@ Examples:
   %(prog)s --notes 12 --metric "soft_tenney:1,primes:0.5" --ratio-limit 64
   %(prog)s --notes 12 --metric "tenney:1,edo12:2"  # neji scale
   %(prog)s --seeds my_scales.txt --notes 7  # use seed scales from file
-  %(prog)s --compare --metric barlow
+  %(prog)s --compare "9/8,5/4,4/3,3/2,5/3,15/8" --metric barlow
+  %(prog)s --compare --seeds my_scales.txt --metric barlow
   %(prog)s --notes 7 --quiet --random-seed 42  # reproducible, script-friendly
+  %(prog)s --notes 7 --json  # machine-readable output
+  %(prog)s --runs 3 --notes 7  # 3 runs, best of each seeds the next
 
 Seed file format (supports Scala .scl format):
   ! comment (Scala style)
@@ -73,7 +79,7 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
     parser.add_argument("--population", type=int, default=300, 
                         help="Population size (default: 300)")
     parser.add_argument("--runs", type=int, default=1, 
-                        help="Number of independent runs (default: 1)")
+                        help="Number of runs (default: 1). Best scales from each run seed the next.")
     parser.add_argument("--metric", type=str, default='barlow', 
                         help="Metric(s) to use. Single: 'barlow'. Combined: 'barlow:1,roughness:0.5'")
     parser.add_argument("--temp", type=float, default=0.1, 
@@ -92,8 +98,11 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
                         help="Random seed for reproducible results")
     parser.add_argument("--quiet", action="store_true",
                         help="Suppress progress output (only show results)")
-    parser.add_argument("--compare", action="store_true", 
-                        help="Compare known scales instead of searching")
+    parser.add_argument("--json", action="store_true",
+                        help="Output results as JSON (implies --quiet)")
+    parser.add_argument("--compare", nargs='?', const=True, default=False, metavar="RATIOS",
+                        help="Compare scales. With no argument: use --seeds file. "
+                             "With ratios: evaluate that scale (e.g., '9/8,5/4,4/3,3/2,5/3,15/8')")
     parser.add_argument("--list-metrics", action="store_true", 
                         help="List available metrics and exit")
     args = parser.parse_args()
@@ -130,16 +139,12 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
     # Compute normalization ranges for the given ratio limit
     init_normalization(args.ratio_limit)
     
-    if args.compare:
-        scales_to_compare = [
-            ("User's example (5-limit)", ["6/5", "5/4", "4/3", "3/2", "8/5", "5/3"]),
-            ("Ptolemaic diatonic", ["9/8", "5/4", "4/3", "3/2", "5/3", "15/8"]),
-            ("Natural harmonic (5-limit)", ["9/8", "5/4", "4/3", "3/2", "8/5", "15/8"]),
-            ("Evolved septimal (7-limit)", ["10/9", "7/6", "5/4", "4/3", "3/2", "5/3", "7/4"]),
-        ]
-        
-        for name, ratios in scales_to_compare:
-            evaluate_named_scale(name, ratios, metrics, args.octaves, scale_metrics, edo, args.combine)
+    # JSON implies quiet
+    if args.json:
+        args.quiet = True
+    
+    if args.compare is not False:
+        _handle_compare(args, metrics, scale_metrics, edo)
         return
     
     # Parse required/excluded notes
@@ -203,23 +208,40 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
         print(f"Metric: {metric_desc}")
         print(f"Interval combination: {combine_desc_str}")
         print(f"Generations: {config.generations}")
+        if args.runs > 1:
+            print(f"Runs: {args.runs} (cross-seeding)")
         if args.random_seed is not None:
             print(f"Random seed: {args.random_seed}")
         print("=" * 60)
         print()
     
     best_overall = None
+    discovered_scales = []  # Cross-seeding: accumulate good scales across runs
     
     for run in range(args.runs):
         if args.runs > 1 and verbose:
             print(f"\n--- Run {run + 1}/{args.runs} ---\n")
         
-        scale, fitness, details = evolve(config, verbose=verbose, seed_scales=seed_scales)
+        # Build effective seed list: original seeds + scales found in previous runs
+        effective_seeds = list(seed_scales) if seed_scales else []
+        effective_seeds.extend(discovered_scales)
+        
+        scale, fitness, details = evolve(config, verbose=verbose,
+                                         seed_scales=effective_seeds if effective_seeds else None)
+        
+        # Add this run's best to discovered scales for cross-seeding
+        discovered_scales.append(list(scale))
         
         if best_overall is None or fitness > best_overall[1]:
             best_overall = (scale, fitness, details)
     
     scale, fitness, details = best_overall
+    
+    # JSON output
+    if args.json:
+        _output_json(scale, details, metrics, scale_metrics, edo, octave_desc,
+                     seed_scales, seed_names)
+        return
     
     if verbose:
         print("\n" + "=" * 60)
@@ -275,6 +297,179 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
         print("=" * 60)
     print()
     print(format_scale(scale))
+
+
+def _handle_compare(args, metrics, scale_metrics, edo):
+    """Handle --compare mode: evaluate scales and display ranked results."""
+    verbose = not args.quiet
+    
+    # Parse filters
+    fixed_notes = args.notes
+    required_notes = parse_ratios(args.include) if args.include else []
+    excluded_notes = set(parse_ratios(args.exclude)) if args.exclude else set()
+    
+    # Build list of (name, ratios_str_list) to evaluate
+    to_evaluate = []
+    
+    if args.compare is True:
+        # No ratios given — use seed file or fallback to built-in examples
+        if args.seeds:
+            scales, names = load_seed_scales(args.seeds, with_names=True)
+            if not scales:
+                print(f"No scales found in {args.seeds}")
+                return
+            for i, (scale_ratios, name) in enumerate(zip(scales, names)):
+                label = name or f"Scale #{i + 1}"
+                ratios_str = [f"{r.numerator}/{r.denominator}" for r in scale_ratios]
+                to_evaluate.append((label, ratios_str))
+        else:
+            to_evaluate = [
+                ("Ptolemaic diatonic", ["9/8", "5/4", "4/3", "3/2", "5/3", "15/8"]),
+                ("Natural harmonic (5-limit)", ["9/8", "5/4", "4/3", "3/2", "8/5", "15/8"]),
+                ("Septimal (7-limit)", ["10/9", "7/6", "5/4", "4/3", "3/2", "5/3", "7/4"]),
+            ]
+    else:
+        to_evaluate.append(("Custom scale", args.compare.split(',')))
+    
+    # Filter scales by note count and constraints
+    from fractions import Fraction
+    has_filters = (fixed_notes is not None or required_notes or excluded_notes)
+    filtered = []
+    skipped = 0
+    for name, ratios_str in to_evaluate:
+        scale = [Fraction(r) for r in ratios_str if r.strip() != "2/1"]
+        num_notes = len(scale) + 1  # +1 for tonic
+        
+        if fixed_notes is not None and num_notes != fixed_notes:
+            skipped += 1
+            continue
+        if required_notes:
+            scale_set = set(scale)
+            if not all(r in scale_set for r in required_notes):
+                skipped += 1
+                continue
+        if excluded_notes:
+            scale_set = set(scale)
+            if any(e in scale_set for e in excluded_notes):
+                skipped += 1
+                continue
+        
+        filtered.append((name, ratios_str))
+    
+    if not filtered:
+        filter_parts = []
+        if fixed_notes is not None:
+            filter_parts.append(f"--notes {fixed_notes}")
+        if required_notes:
+            filter_parts.append(f"--include {args.include}")
+        if excluded_notes:
+            filter_parts.append(f"--exclude {args.exclude}")
+        print(f"No scales match filters ({', '.join(filter_parts)}). "
+              f"{skipped} scale{'s' if skipped != 1 else ''} filtered out.")
+        return
+    
+    if skipped > 0 and verbose:
+        print(f"({skipped} scale{'s' if skipped != 1 else ''} filtered out)")
+    
+    # Evaluate matching scales
+    results = []
+    for name, ratios_str in filtered:
+        fitness, details, scale = evaluate_named_scale(
+            name, ratios_str, metrics, args.octaves,
+            scale_metrics, edo, args.combine)
+        results.append((name, details['quality'], details, scale))
+    
+    # Sort by quality descending
+    results.sort(key=lambda x: x[1], reverse=True)
+    
+    # Print detailed output for each scale (in ranked order) if verbose
+    if verbose and len(results) > 1:
+        for name, quality, details, scale in results:
+            print_scale_details(name, scale, details, metrics, scale_metrics, edo)
+    
+    # Always print ranked summary
+    if len(results) == 1:
+        # Single scale — just show the result
+        name, quality, details, scale = results[0]
+        if verbose:
+            print_scale_details(name, scale, details, metrics, scale_metrics, edo)
+        else:
+            print(f"{name}: quality = {quality:.4f}")
+            print(", ".join(f"{r.numerator}/{r.denominator}" for r in sorted(scale)))
+    else:
+        # Multiple scales — ranked summary table
+        print(f"\n{'=' * 60}")
+        print("RANKING")
+        print("=" * 60)
+        
+        # Find max name length for alignment
+        max_name = max(len(r[0]) for r in results)
+        max_name = min(max_name, 40)  # Cap for very long names
+        
+        print(f"\n  {'#':>2}  {'Quality':>7}  {'Notes':>5}  {'Name':<{max_name}}  Scale")
+        print(f"  {'—'*2}  {'—'*7}  {'—'*5}  {'—'*max_name}  {'—'*30}")
+        
+        for rank, (name, quality, details, scale) in enumerate(results, 1):
+            truncated_name = name[:max_name]
+            notes = len(scale) + 1  # +1 for tonic
+            ratios = ", ".join(f"{r.numerator}/{r.denominator}" for r in sorted(scale))
+            # Truncate ratios if very long
+            if len(ratios) > 60:
+                ratios = ratios[:57] + "..."
+            print(f"  {rank:>2}  {quality:>7.4f}  {notes:>5}  {truncated_name:<{max_name}}  {ratios}")
+        
+        print()
+
+
+def _output_json(scale, details, metrics, scale_metrics, edo, octave_desc,
+                 seed_scales=None, seed_names=None):
+    """Output results as JSON."""
+    from fractions import Fraction
+    
+    scale_sorted = sorted(scale)
+    
+    result = {
+        "quality": round(details['quality'], 6),
+        "num_intervals": details['num_intervals'],
+        "octave_range": details['octave_range'],
+        "scale": [f"{r.numerator}/{r.denominator}" for r in scale_sorted] + ["2/1"],
+        "cents": [round(1200 * math.log2(float(r)), 1) for r in scale_sorted] + [1200.0],
+    }
+    
+    # Metric breakdown
+    if len(metrics) > 1 or scale_metrics:
+        breakdown = {}
+        for metric_name, weight in metrics:
+            raw = details['metric_averages'].get(metric_name, 0)
+            min_val, max_val = get_normalization(metric_name)
+            normalized = (raw - min_val) / (max_val - min_val)
+            normalized = max(0.0, min(1.0, normalized))
+            quality = 1.0 - normalized
+            breakdown[metric_name] = {"quality": round(quality, 4), "weight": weight}
+        
+        for metric_name, weight in scale_metrics:
+            raw = details['metric_averages'].get(metric_name, 0)
+            min_val, max_val = get_normalization(metric_name)
+            normalized = (raw - min_val) / (max_val - min_val)
+            normalized = max(0.0, min(1.0, normalized))
+            if metric_name in ('primes', 'variety'):
+                quality = normalized
+            else:
+                quality = 1.0 - normalized
+            label = f"edo{edo}" if metric_name == 'edo' else metric_name
+            breakdown[label] = {"quality": round(quality, 4), "weight": weight}
+        
+        result["metrics"] = breakdown
+    
+    # Seed match
+    if seed_scales:
+        match_idx, match_name = find_matching_seed(scale, seed_scales, seed_names)
+        if match_idx >= 0:
+            result["seed_match"] = {"index": match_idx + 1}
+            if match_name:
+                result["seed_match"]["name"] = match_name
+    
+    print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

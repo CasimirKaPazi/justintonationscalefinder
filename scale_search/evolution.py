@@ -3,11 +3,14 @@
 import math
 import random
 import bisect
+import time
 from fractions import Fraction
 from typing import List, Set, Tuple
 
 from scale_search.config import SearchConfig
 from scale_search.util import generate_candidate_ratios, sanitize_scale
+
+__all__ = ['evaluate_scale', 'evolve']
 from scale_search.metrics import (
     CONSONANCE_METRICS, SCALE_METRICS,
     cached_metric, combined_metric, get_normalization, init_normalization,
@@ -590,6 +593,7 @@ def evolve(config: SearchConfig, verbose: bool = True,
     # Track for stagnation and early stopping
     stagnation_counter = 0
     last_reheat = 0  # Generation of last reheat
+    start_time = time.monotonic()
     
     for gen in range(config.generations):
         population.sort(key=lambda x: x[0], reverse=True)
@@ -618,7 +622,8 @@ def evolve(config: SearchConfig, verbose: bool = True,
         if stagnation_counter > 30:
             if verbose:
                 best_quality = best_ever[0]
-                print(f"Gen {gen:4d}: converged (no improvement for 30 gens), best quality = {best_quality:.4f}, cached intervals = {len(interval_cache)}")
+                elapsed = time.monotonic() - start_time
+                print(f"Gen {gen:4d}: converged (no improvement for 30 gens), best quality = {best_quality:.4f}, cached intervals = {len(interval_cache)}  [{elapsed:.1f}s]")
             break
         
         # Adaptive mutation rate (increase when stagnating)
@@ -645,10 +650,19 @@ def evolve(config: SearchConfig, verbose: bool = True,
             else:
                 fp_div = 0
             
-            if abs(current_quality - best_quality) < 0.0001:
-                print(f"Gen {gen:4d}: quality = {current_quality:.4f}, temp = {temperature:.4f}, unique = {unique}/50, fp_div = {fp_div:.3f}")
+            # Timing
+            elapsed = time.monotonic() - start_time
+            if gen > 0:
+                per_gen = elapsed / gen
+                remaining = per_gen * (config.generations - gen)
+                time_str = f"  [{elapsed:.0f}s elapsed, ~{remaining:.0f}s left]"
             else:
-                print(f"Gen {gen:4d}: quality = {current_quality:.4f} (best = {best_quality:.4f}), temp = {temperature:.4f}, unique = {unique}/50, fp_div = {fp_div:.3f}")
+                time_str = ""
+            
+            if abs(current_quality - best_quality) < 0.0001:
+                print(f"Gen {gen:4d}: quality = {current_quality:.4f}, temp = {temperature:.4f}, unique = {unique}/50, fp_div = {fp_div:.3f}{time_str}")
+            else:
+                print(f"Gen {gen:4d}: quality = {current_quality:.4f} (best = {best_quality:.4f}), temp = {temperature:.4f}, unique = {unique}/50, fp_div = {fp_div:.3f}{time_str}")
         
         # Create new population
         new_population = []
@@ -767,6 +781,10 @@ def evolve(config: SearchConfig, verbose: bool = True,
         max_iterations=20, candidate_cents=candidate_cents)
     if best_fitness > best_ever[0]:
         best_ever = (best_fitness, best_scale)
+    
+    if verbose:
+        total_time = time.monotonic() - start_time
+        print(f"Done in {total_time:.1f}s (evaluated {len(scale_cache)} unique scales)")
     
     # Return best found
     best_fitness, best_scale = best_ever

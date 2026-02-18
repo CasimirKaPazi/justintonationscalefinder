@@ -11,6 +11,12 @@ from scale_search.metrics import (
 )
 from scale_search.evolution import evaluate_scale
 
+__all__ = [
+    'load_seed_scales', 'find_matching_seed',
+    'format_scale', 'print_interval_matrix',
+    'evaluate_named_scale', 'print_scale_details',
+]
+
 def load_seed_scales(filepath: str, with_names: bool = False):
     """
     Load seed scales from a file. Supports both simple format and Scala .scl format.
@@ -76,49 +82,46 @@ def load_seed_scales(filepath: str, with_names: bool = False):
     current_scale = []
     current_name = None
     
+    def flush_scale():
+        """Save current_scale if non-empty, reset state."""
+        nonlocal current_scale, current_name
+        if current_scale:
+            if current_scale[-1] == Fraction(2, 1):
+                current_scale = current_scale[:-1]
+            if current_scale:
+                current_scale = sanitize_scale(current_scale)
+                if current_scale:
+                    scales.append(current_scale)
+                    names.append(current_name)
+        current_scale = []
+        current_name = None
+    
     try:
         with open(filepath, 'r') as f:
             for line in f:
                 line = line.strip()
                 
-                # Handle comments and blank lines
+                if not line:
+                    # Blank line = delimiter: flush scale and reset name
+                    flush_scale()
+                    continue
+                
                 if line.startswith('#'):
-                    # Save current scale if we have one
-                    if current_scale:
-                        if current_scale[-1] == Fraction(2, 1):
-                            current_scale = current_scale[:-1]
-                        if current_scale:
-                            current_scale = sanitize_scale(current_scale)
-                            if current_scale:
-                                scales.append(current_scale)
-                                names.append(current_name)
-                        current_scale = []
-                    # Extract name from comment (strip # and whitespace)
+                    # # comment: also acts as delimiter (backward compat), then sets name
+                    flush_scale()
                     current_name = line[1:].strip() or None
                     continue
                 
                 if line.startswith('!'):
-                    # Scala comment - could be filename which serves as name
-                    if current_name is None and '.scl' in line.lower():
-                        # Extract name from "! filename.scl"
-                        name = line[1:].strip()
-                        if name.lower().endswith('.scl'):
-                            name = name[:-4]
-                        current_name = name or None
-                    continue
-                
-                if not line:
-                    # Blank line - save current scale
+                    # ! comment (Scala style): first non-empty one becomes the name
+                    # If mid-scale, skip (e.g. the "!" separator line in .scl format)
                     if current_scale:
-                        if current_scale[-1] == Fraction(2, 1):
-                            current_scale = current_scale[:-1]
-                        if current_scale:
-                            current_scale = sanitize_scale(current_scale)
-                            if current_scale:
-                                scales.append(current_scale)
-                                names.append(current_name)
-                        current_scale = []
-                        current_name = None
+                        continue
+                    comment_text = line[1:].strip()
+                    if comment_text and current_name is None:
+                        if comment_text.lower().endswith('.scl'):
+                            comment_text = comment_text[:-4]
+                        current_name = comment_text
                     continue
                 
                 # Skip cents values (contain decimal point)
@@ -153,14 +156,7 @@ def load_seed_scales(filepath: str, with_names: bool = False):
                     pass
             
             # Don't forget the last scale
-            if current_scale:
-                if current_scale[-1] == Fraction(2, 1):
-                    current_scale = current_scale[:-1]
-                if current_scale:
-                    current_scale = sanitize_scale(current_scale)
-                    if current_scale:
-                        scales.append(current_scale)
-                        names.append(current_name)
+            flush_scale()
     
     except FileNotFoundError:
         print(f"Warning: Seed file '{filepath}' not found.")
@@ -247,11 +243,14 @@ def print_interval_matrix(scale: List[Fraction], metrics: List[Tuple[str, float]
 
 def evaluate_named_scale(scale_name: str, ratios: List[str], metrics: List[Tuple[str, float]] = None,
                          octave_range: int = 1, scale_metrics: List[Tuple[str, float]] = None,
-                         edo: int = 0, combine_method: str = 'geometric'):
-    """Evaluate and display a specific scale given as string ratios.
+                         edo: int = 0, combine_method: str = 'geometric') -> Tuple[float, dict, List]:
+    """Evaluate a specific scale given as string ratios and return results.
     
     Note: call init_normalization(ratio_limit) before using this function
     to ensure metric normalization ranges are set for the relevant ratio limit.
+    
+    Returns:
+        (quality, details, scale) where scale is a list of Fractions.
     """
     if metrics is None:
         metrics = [('tenney', 1.0)]
@@ -261,8 +260,22 @@ def evaluate_named_scale(scale_name: str, ratios: List[str], metrics: List[Tuple
     scale = [Fraction(r) for r in ratios if r != "2/1"]
     fitness, details = evaluate_scale(scale, metrics, octave_range, None, scale_metrics, edo, combine_method)
     
+    return fitness, details, scale
+
+
+def print_scale_details(scale_name: str, scale: List[Fraction], details: dict,
+                        metrics: List[Tuple[str, float]] = None,
+                        scale_metrics: List[Tuple[str, float]] = None,
+                        edo: int = 0):
+    """Print detailed evaluation of a scale."""
+    if metrics is None:
+        metrics = [('tenney', 1.0)]
+    if scale_metrics is None:
+        scale_metrics = []
+    
     # Build metric description
     metric_desc = format_metric_description(metrics, scale_metrics, edo)
+    octave_range = details.get('octave_range', 1)
     
     print(f"\n{'=' * 60}")
     print(f"Scale: {scale_name}")

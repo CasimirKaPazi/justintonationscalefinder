@@ -8,6 +8,12 @@ from typing import List, Set
 from scale_search.config import SearchConfig
 from scale_search.util import reduce_to_octave, is_valid_ratio
 
+__all__ = [
+    'SIMPLE_INTERVALS', 'COMMAS',
+    'mutate', 'crossover', 'create_random_scale',
+    'scale_invert', 'scale_rotate',
+]
+
 SIMPLE_INTERVALS = [
     Fraction(3, 2),   # Perfect fifth
     Fraction(4, 3),   # Perfect fourth

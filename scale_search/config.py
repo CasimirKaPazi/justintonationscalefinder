@@ -61,6 +61,10 @@ class SearchConfig:
             self.excluded_notes = set(self.excluded_notes)
         if self.min_notes > self.max_notes:
             self.min_notes, self.max_notes = self.max_notes, self.min_notes
+        # When fixed_notes is set, ensure min/max are consistent
+        if self.fixed_notes is not None:
+            self.min_notes = self.fixed_notes
+            self.max_notes = self.fixed_notes
         if self.fixed_notes is not None and len(self.required_notes) > self.fixed_notes - 1:
             raise ValueError(f"Too many required notes ({len(self.required_notes)}) for {self.fixed_notes}-note scale")
         if len(self.required_notes) > self.max_notes - 1:

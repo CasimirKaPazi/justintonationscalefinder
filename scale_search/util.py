@@ -4,6 +4,11 @@ import math
 from fractions import Fraction
 from typing import List, Set, Tuple
 
+__all__ = [
+    'prime_factors', 'parse_ratios', 'reduce_to_octave', 'sanitize_scale',
+    'is_valid_ratio', 'interval_between', 'generate_candidate_ratios',
+]
+
 
 def prime_factors(n: int) -> List[Tuple[int, int]]:
     """Return prime factorization as list of (prime, exponent) pairs."""

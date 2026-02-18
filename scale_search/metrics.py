@@ -13,6 +13,25 @@ from typing import List, Set, Tuple
 
 from scale_search.util import prime_factors, generate_candidate_ratios
 
+__all__ = [
+    # Metric registries
+    'CONSONANCE_METRICS', 'SCALE_METRICS',
+    # Interval metrics
+    'tenney_height', 'euler_gradus', 'harmonic_entropy', 'plomp_levelt_roughness',
+    'wilson_complexity', 'barlow_harmonicity', 'prime_limit_penalty', 'odd_limit',
+    # Scale metrics
+    'step_size_penalty', 'prime_diversity_score', 'edo_penalty', 'edo_deviation',
+    'scale_balance', 'scale_propriety', 'scale_variety',
+    # Normalization
+    'init_normalization', 'get_normalization',
+    # Caching
+    'combined_metric', 'cached_metric', 'clear_metric_cache',
+    # Parsing and formatting
+    'parse_metrics', 'format_metric_description',
+    # Fingerprinting
+    'scale_fingerprint', 'fingerprint_distance', 'fingerprint_diversity_score',
+]
+
 # =============================================================================
 # METRIC CACHING
 # =============================================================================
@@ -62,20 +81,13 @@ def euler_gradus(ratio: Fraction) -> float:
 
 
 # Precomputed simple ratios for harmonic entropy (computed once at module load)
-_ENTROPY_SIMPLE_RATIOS: List[Tuple[float, int]] = []
-
-def _init_entropy_ratios():
-    """Initialize the simple ratios list for harmonic entropy."""
-    global _ENTROPY_SIMPLE_RATIOS
-    max_complexity = 100
-    for d in range(1, 16):
-        for n in range(d, 2 * d + 1):
-            if math.gcd(n, d) == 1:
-                complexity = n * d
-                if complexity <= max_complexity:
-                    _ENTROPY_SIMPLE_RATIOS.append((math.log2(n / d), complexity))
-
-_init_entropy_ratios()
+# Each entry is (log2(n/d), complexity=n*d) for coprime n/d with d<16 and n*d<=100
+_ENTROPY_SIMPLE_RATIOS: List[Tuple[float, int]] = [
+    (math.log2(n / d), n * d)
+    for d in range(1, 16)
+    for n in range(d, 2 * d + 1)
+    if math.gcd(n, d) == 1 and n * d <= 100
+]
 
 
 def harmonic_entropy(ratio: Fraction, spread: float = 0.017) -> float:

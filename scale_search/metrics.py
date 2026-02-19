@@ -5,6 +5,7 @@ All interval metrics take a Fraction and return a float where lower = more conso
 Scale metrics take a list of Fractions (the scale) and return a float.
 """
 
+import bisect
 import heapq
 import math
 import re
@@ -23,7 +24,7 @@ __all__ = [
     'step_size_penalty', 'prime_diversity_score', 'edo_penalty', 'edo_deviation',
     'scale_balance', 'scale_propriety', 'scale_variety',
     # Normalization
-    'init_normalization', 'get_normalization',
+    'init_normalization', 'get_normalization', 'quantile_normalize',
     # Caching
     'combined_metric', 'cached_metric', 'clear_metric_cache',
     # Parsing and formatting
@@ -599,20 +600,29 @@ _SCALE_METRIC_NORMALIZATION = {
 _normalization: dict = dict(_SCALE_METRIC_NORMALIZATION)
 _normalization_limit: int = 0  # Which ratio_limit was used to compute current ranges
 
+# Sorted arrays of metric values for quantile normalization (interval metrics only)
+# Maps metric_name -> sorted list of float values across all candidate ratios
+_quantile_data: dict = {}
+
 
 def init_normalization(ratio_limit: int, verbose: bool = False):
     """
-    Compute normalization ranges for interval metrics by evaluating all candidate
+    Compute normalization data for interval metrics by evaluating all candidate
     ratios within the given ratio_limit.
     
-    This replaces the old hardcoded ranges which were far too narrow for most
-    metrics (especially euler, wilson, barlow, odd_limit), causing the optimizer
-    to clamp the vast majority of intervals to the same maximum penalty score
-    and lose all discrimination between them.
+    For each consonance metric, stores:
+    - Min/max range (for display and scale metric normalization)
+    - Sorted value array (for quantile normalization used in optimization)
+    
+    Quantile normalization maps each metric's distribution to uniform [0,1],
+    giving equal discriminative power regardless of distribution shape.
+    Without this, metrics like harmonic entropy (clustered near minimum with
+    long tail) have almost no influence compared to evenly-distributed metrics
+    like Tenney height, even at equal weights.
     
     Must be called before any evaluation. Caches results per ratio_limit.
     """
-    global _normalization, _normalization_limit
+    global _normalization, _normalization_limit, _quantile_data
     
     if ratio_limit == _normalization_limit:
         return  # Already computed for this limit
@@ -624,10 +634,12 @@ def init_normalization(ratio_limit: int, verbose: bool = False):
         values = [fn(r) for r in candidates]
         if values:
             _normalization[name] = (min(values), max(values))
+            _quantile_data[name] = sorted(values)
         else:
             _normalization[name] = (0.0, 1.0)
+            _quantile_data[name] = [0.0, 1.0]
     
-    # Scale metrics keep their static ranges
+    # Scale metrics keep their static ranges (no quantile data)
     _normalization.update(_SCALE_METRIC_NORMALIZATION)
     
     _normalization_limit = ratio_limit
@@ -636,13 +648,41 @@ def init_normalization(ratio_limit: int, verbose: bool = False):
         print("Metric normalization ranges (computed from candidates):")
         for name in CONSONANCE_METRICS:
             mn, mx = _normalization[name]
-            print(f"  {name:12s}: [{mn:.2f}, {mx:.2f}]")
+            n = len(_quantile_data.get(name, []))
+            print(f"  {name:12s}: [{mn:.2f}, {mx:.2f}] ({n} samples for quantile)")
         print()
 
 
 def get_normalization(metric_name: str) -> Tuple[float, float]:
-    """Get the normalization range for a metric."""
+    """Get the min/max normalization range for a metric."""
     return _normalization.get(metric_name, (0.0, 1.0))
+
+
+def quantile_normalize(value: float, metric_name: str) -> float:
+    """
+    Quantile-normalize a metric value to [0, 1].
+    
+    Returns the fraction of candidate ratios with metric value <= this value.
+    0.0 = best possible (lowest raw score), 1.0 = worst possible.
+    
+    This gives each metric uniform influence regardless of distribution shape.
+    For example, if harmonic entropy clusters 90% of intervals near its minimum,
+    min-max normalization would compress that 90% into [0, 0.1], losing nearly
+    all discrimination. Quantile normalization spreads them across [0, 0.9].
+    
+    Falls back to min-max normalization if no quantile data is available
+    (e.g. for scale metrics).
+    """
+    sorted_values = _quantile_data.get(metric_name)
+    if not sorted_values:
+        # Fallback to min-max
+        min_val, max_val = get_normalization(metric_name)
+        if max_val <= min_val:
+            return 0.0
+        return max(0.0, min(1.0, (value - min_val) / (max_val - min_val)))
+    
+    rank = bisect.bisect_left(sorted_values, value)
+    return rank / len(sorted_values)
 
 
 def scale_fingerprint(details: dict) -> Tuple[float, ...]:
@@ -658,15 +698,13 @@ def scale_fingerprint(details: dict) -> Tuple[float, ...]:
     """
     fingerprint = []
     
-    # Add interval metric averages (normalized)
+    # Add interval metric averages (quantile-normalized for uniform spread)
     for metric_name, _ in details.get('metrics', []):
         raw = details['metric_averages'].get(metric_name, 0)
-        min_val, max_val = get_normalization(metric_name)
-        norm = (raw - min_val) / (max_val - min_val) if max_val > min_val else 0
-        norm = max(0.0, min(1.0, norm))
+        norm = quantile_normalize(raw, metric_name)
         fingerprint.append(norm)
     
-    # Add scale metric values (normalized)
+    # Add scale metric values (min-max normalized, no quantile data available)
     for metric_name, _ in details.get('scale_metrics', []):
         raw = details['metric_averages'].get(metric_name, 0)
         min_val, max_val = get_normalization(metric_name)
@@ -759,9 +797,23 @@ def parse_metrics(metric_str: str) -> Tuple[List[Tuple[str, float]], List[Tuple[
 
 def combined_metric(ratio: Fraction, metrics: List[Tuple[str, float]], normalize: bool = True) -> float:
     """
-    Compute weighted combination of multiple metrics.
-    If normalize=True, scales each metric to roughly 0-1 range before combining.
-    Uses caching for repeated ratio evaluations.
+    Compute weighted combination of multiple metrics for a single interval.
+    Returns a penalty score in [0, 1] where 0 = most consonant.
+    
+    If normalize=True (default), uses quantile normalization for each metric
+    and combines via weighted arithmetic mean.
+    
+    Quantile normalization ensures each metric contributes equally regardless
+    of distribution shape. Without it, metrics like harmonic entropy (clustered
+    near minimum with long tail) have almost no influence compared to evenly-
+    distributed metrics like Tenney height, even at equal weights.
+    
+    The arithmetic mean at this level lets different metrics compensate each
+    other for individual intervals — what matters is the overall scale being
+    good on all metrics, not every interval. Strictness across intervals is
+    controlled by the --combine flag (geometric, logloss, worst, etc.).
+    
+    If normalize=False, returns a simple weighted arithmetic mean of raw scores.
     """
     total = 0.0
     total_weight = 0.0
@@ -770,9 +822,7 @@ def combined_metric(ratio: Fraction, metrics: List[Tuple[str, float]], normalize
         score = cached_metric(ratio, metric_name)
         
         if normalize:
-            min_val, max_val = get_normalization(metric_name)
-            score = (score - min_val) / (max_val - min_val)
-            score = max(0.0, min(1.0, score))  # Clamp to [0, 1]
+            score = quantile_normalize(score, metric_name)
         
         total += weight * score
         total_weight += weight

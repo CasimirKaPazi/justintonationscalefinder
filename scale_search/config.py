@@ -48,6 +48,18 @@ class SearchConfig:
     excluded_notes: Set[Fraction] = None
     combine_method: str = 'geometric'
     
+    # Grouped (sub-scale) search. When `groups` is set the genome is held in
+    # SLOT ORDER rather than pitch order: index i is slot i+1, and slot 0 is
+    # the implicit tonic 1/1. Each entry of `groups` is a tuple of slot indices
+    # forming one sub-scale. `num_slots` is the total note count including the
+    # tonic, so the genome has num_slots - 1 entries.
+    groups: List[Tuple[int, ...]] = None
+    num_slots: int = None
+    group_name: str = None
+    # Blend between sub-scale quality and whole-scale quality:
+    # final = local^(1 - global_weight) * global^global_weight
+    global_weight: float = 0.3
+    
     def __post_init__(self):
         if self.metrics is None:
             self.metrics = [('barlow', 1.0)]
@@ -59,6 +71,17 @@ class SearchConfig:
             self.excluded_notes = set()
         else:
             self.excluded_notes = set(self.excluded_notes)
+        
+        # Group structure fixes the note count: one note per slot.
+        if self.groups:
+            self.groups = [tuple(g) for g in self.groups]
+            if self.num_slots is None:
+                self.num_slots = max(max(g) for g in self.groups) + 1
+            self.fixed_notes = self.num_slots
+            if not (0.0 <= self.global_weight <= 1.0):
+                raise ValueError(
+                    f"global_weight must be between 0 and 1, got {self.global_weight}")
+        
         if self.min_notes > self.max_notes:
             self.min_notes, self.max_notes = self.max_notes, self.min_notes
         # When fixed_notes is set, ensure min/max are consistent

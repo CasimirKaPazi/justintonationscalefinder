@@ -12,7 +12,8 @@ from scale_search.metrics import (
     parse_metrics, get_normalization, init_normalization,
     format_metric_description,
 )
-from scale_search.evolution import evolve
+from scale_search.evolution import evolve, slots_to_pitches
+from scale_search.groups import parse_group_spec, describe_structures
 from scale_search.display import (
     load_seed_scales, find_matching_seed,
     format_scale, print_interval_matrix,
@@ -67,7 +68,8 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
         """
     )
     parser.add_argument("--notes", type=int, default=None, 
-                        help="Exact number of notes including tonic (default: 7)")
+                        help="Exact number of notes including tonic (default: 7). "
+                             "Ignored with --groups, which sets its own note count.")
     parser.add_argument("--max-notes", type=int, default=7, 
                         help="Maximum notes in scale (default: 7)")
     parser.add_argument("--min-notes", type=int, default=3, 
@@ -103,9 +105,51 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
     parser.add_argument("--compare", nargs='?', const=True, default=False, metavar="RATIOS",
                         help="Compare scales. With no argument: use --seeds file. "
                              "With ratios: evaluate that scale (e.g., '9/8,5/4,4/3,3/2,5/3,15/8')")
+    parser.add_argument("--groups", type=str, default=None, metavar="SPEC",
+                        help="Optimize sub-scales instead of one flat scale. "
+                             "SPEC is a polytope (dodecahedron, 24cell, cube, "
+                             "icosahedron, octahedron, tetrahedron), "
+                             "'cyclic:N,k[,step]', or a group file. "
+                             "Sets the note count; --notes is ignored.")
+    parser.add_argument("--global-weight", type=float, default=0.3, metavar="W",
+                        help="With --groups: blend sub-scale quality with whole-scale "
+                             "quality as local^(1-W) * global^W (default: 0.3). "
+                             "0 = sub-scales only, 1 = whole scale only.")
+    parser.add_argument("--list-groups", action="store_true",
+                        help="List available group structures and exit")
+    parser.add_argument("--export-groups", type=str, default=None, metavar="FILE",
+                        help="Write the structure named by --groups to FILE as a "
+                             "group file and exit, for inspection or hand-editing")
     parser.add_argument("--list-metrics", action="store_true", 
                         help="List available metrics and exit")
     args = parser.parse_args()
+    
+    if args.list_groups:
+        print(describe_structures())
+        return
+    
+    if args.export_groups:
+        if not args.groups:
+            print("Error: --export-groups needs --groups to say what to export.")
+            return
+        try:
+            structure = parse_group_spec(args.groups)
+        except (ValueError, OSError) as e:
+            print(f"Error: {e}")
+            return
+        try:
+            with open(args.export_groups, 'w') as f:
+                f.write(f"# {structure.name}: {structure.description}\n")
+                f.write(f"# {structure.summary()}\n")
+                f.write("# one sub-scale per line, as slot indices\n")
+                for g in structure.groups:
+                    f.write(' '.join(str(i) for i in g) + '\n')
+        except OSError as e:
+            print(f"Error writing {args.export_groups}: {e}")
+            return
+        print(f"Wrote {len(structure.groups)} sub-scales "
+              f"({structure.num_slots} slots) to {args.export_groups}")
+        return
     
     if args.list_metrics:
         print("Available interval metrics (applied to each interval pair):")
@@ -151,22 +195,42 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
     required_notes = parse_ratios(args.include) if args.include else []
     excluded_notes = parse_ratios(args.exclude) if args.exclude else []
     
-    config = SearchConfig(
-        max_notes=args.max_notes,
-        min_notes=args.min_notes,
-        fixed_notes=args.notes,
-        ratio_limit=args.ratio_limit,
-        generations=args.generations,
-        population_size=args.population,
-        metrics=metrics,
-        scale_metrics=scale_metrics,
-        initial_temp=args.temp,
-        octave_range=args.octaves,
-        edo=edo,
-        required_notes=required_notes,
-        excluded_notes=excluded_notes,
-        combine_method=args.combine,
-    )
+    # Parse group structure, if any
+    structure = None
+    if args.groups:
+        try:
+            structure = parse_group_spec(args.groups)
+        except (ValueError, OSError) as e:
+            print(f"Error: {e}")
+            return
+        if args.notes is not None and args.notes != structure.num_slots:
+            print(f"Note: --notes {args.notes} ignored; {structure.name} "
+                  f"has {structure.num_slots} slots.")
+
+    try:
+        config = SearchConfig(
+            max_notes=args.max_notes,
+            min_notes=args.min_notes,
+            fixed_notes=args.notes,
+            ratio_limit=args.ratio_limit,
+            generations=args.generations,
+            population_size=args.population,
+            metrics=metrics,
+            scale_metrics=scale_metrics,
+            initial_temp=args.temp,
+            octave_range=args.octaves,
+            edo=edo,
+            required_notes=required_notes,
+            excluded_notes=excluded_notes,
+            combine_method=args.combine,
+            groups=structure.groups if structure else None,
+            num_slots=structure.num_slots if structure else None,
+            group_name=structure.name if structure else None,
+            global_weight=args.global_weight,
+        )
+    except ValueError as e:
+        print(f"Error: {e}")
+        return
     
     verbose = not args.quiet
     
@@ -202,7 +266,13 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
         print("=" * 60)
         print("Just Intonation Scale Search")
         print("=" * 60)
-        print(f"Notes: {note_desc}")
+        if structure:
+            print(f"Groups: {structure.name} ({structure.description})")
+            print(f"  {structure.summary()}")
+            print(f"  global weight: {config.global_weight} "
+                  f"(0 = sub-scales only, 1 = whole scale only)")
+        else:
+            print(f"Notes: {note_desc}")
         print(f"Ratio limit: {config.ratio_limit}")
         print(f"Octave range: {octave_desc}")
         print(f"Metric: {metric_desc}")
@@ -290,6 +360,10 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
         print()
         print_interval_matrix(scale, metrics)
     
+    # Sub-scale breakdown
+    if structure:
+        _print_group_results(scale, details, structure, verbose)
+
     # The scale itself
     if verbose:
         print("\n" + "=" * 60)
@@ -297,6 +371,93 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
         print("=" * 60)
     print()
     print(format_scale(scale))
+
+    if structure:
+        # Slot order is what reconstructs the geometry; the sorted listing
+        # above is what goes into a tuning file.
+        print()
+        print("# slot order (slot 0 = 1/1)")
+        for i, r in enumerate(slots_to_pitches(scale)):
+            print(f"#   {i:>2d}  {r.numerator}/{r.denominator}")
+
+
+def _print_group_results(scale, details, structure, verbose):
+    """Print the per-sub-scale breakdown for a grouped search."""
+    group_details = details.get('groups')
+    if not group_details:
+        return
+
+    full_slots = slots_to_pitches(scale)
+
+    print()
+    print(f"Local (sub-scale) quality:  {details['local_quality']:.4f}")
+    print(f"Global (whole-scale) quality: {details['global_quality']:.4f}")
+    print()
+    print("=" * 60)
+    print(f"SUB-SCALES ({len(group_details)})")
+    print("=" * 60)
+    print()
+
+    # Which sub-scales share notes with which — the moves a player can make.
+    neighbours = {i: [] for i in range(len(group_details))}
+    for i, j, shared in structure.adjacency():
+        if shared >= 2:  # A single shared note is a weak pivot; 2+ is a real move
+            neighbours[i].append(j)
+            neighbours[j].append(i)
+
+    ranked = sorted(range(len(group_details)),
+                    key=lambda i: group_details[i]['quality'], reverse=True)
+
+    # Notes are shown as they sit in the parent scale, not transposed to the
+    # sub-scale's own tonic: you stay in one tuning and shift between
+    # sub-scales, so these are the pitches actually played, and a note shared
+    # by two sub-scales reads as the same ratio in both rows.
+    slot_w = max(len(','.join(str(x) for x in g['group'])) for g in group_details)
+    slot_w = min(max(slot_w, 5), 24)
+
+    if verbose:
+        adj_w = max((len(','.join(str(x) for x in neighbours[i]))
+                     for i in range(len(group_details))), default=0)
+        adj_w = min(max(adj_w, 8), 20)
+        print(f"  {'#':>3s}  {'Quality':>7s}  {'Slots':<{slot_w}s}  "
+              f"{'Adjacent':<{adj_w}s}  Notes (as played)")
+        print(f"  {'-'*3}  {'-'*7}  {'-'*slot_w}  {'-'*adj_w}  {'-'*40}")
+    else:
+        print(f"  {'#':>3s}  {'Quality':>7s}  {'Slots':<{slot_w}s}  Notes (as played)")
+        print(f"  {'-'*3}  {'-'*7}  {'-'*slot_w}  {'-'*40}")
+
+    for i in ranked:
+        g = group_details[i]
+        slots = ','.join(str(x) for x in g['group'])
+        if len(slots) > slot_w:
+            slots = slots[:slot_w - 3] + '...'
+        played = sorted(full_slots[k] for k in g['group'])
+        notes = ', '.join(f"{r.numerator}/{r.denominator}" for r in played)
+        if verbose:
+            adj = ','.join(str(x) for x in neighbours[i])
+            if len(adj) > adj_w:
+                adj = adj[:adj_w - 3] + '...'
+            print(f"  {i:>3d}  {g['quality']:>7.4f}  {slots:<{slot_w}s}  "
+                  f"{adj:<{adj_w}s}  {notes}")
+        else:
+            print(f"  {i:>3d}  {g['quality']:>7.4f}  {slots:<{slot_w}s}  {notes}")
+
+    if verbose:
+        print()
+        # Shapes: sub-scales transposed to their own tonic. Reported as a count
+        # rather than per row, since in practice they are all distinct and a
+        # column of them would say the same thing on every line.
+        shapes = {tuple(g['scale']) for g in group_details}
+        print(f"Distinct sub-scale shapes: {len(shapes)} of {len(group_details)}")
+
+        adj_all = structure.adjacency()
+        if adj_all:
+            shares = {}
+            for _, _, shared in adj_all:
+                shares[shared] = shares.get(shared, 0) + 1
+            desc = ', '.join(f"{c} pairs share {n} notes"
+                             for n, c in sorted(shares.items(), reverse=True))
+            print(f"Adjacency: {desc}")
 
 
 def _handle_compare(args, metrics, scale_metrics, edo):

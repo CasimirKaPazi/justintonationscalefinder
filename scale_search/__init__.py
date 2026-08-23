@@ -31,7 +31,13 @@ from scale_search.operators import (
     mutate, crossover, create_random_scale,
     scale_invert, scale_rotate,
 )
-from scale_search.evolution import evaluate_scale, evolve
+from scale_search.evolution import (
+    evaluate_scale, evolve, combine_penalties,
+    evaluate_grouped_scale, subscale_of, slots_to_pitches,
+)
+from scale_search.groups import (
+    BUILTIN_STRUCTURES, GroupStructure, parse_group_spec, describe_structures,
+)
 from scale_search.display import (
     load_seed_scales, find_matching_seed,
     format_scale, print_interval_matrix, evaluate_named_scale,
@@ -43,7 +49,9 @@ from scale_search.display import (
 __all__ = [
     'SearchConfig',
     'CONSONANCE_METRICS', 'SCALE_METRICS',
-    'evolve', 'evaluate_scale',
+    'evolve', 'evaluate_scale', 'combine_penalties',
+    'evaluate_grouped_scale', 'subscale_of', 'slots_to_pitches',
+    'BUILTIN_STRUCTURES', 'GroupStructure', 'parse_group_spec', 'describe_structures',
     'init_normalization', 'parse_metrics',
     'format_scale', 'load_seed_scales',
 ]

@@ -1,0 +1,10 @@
+# Fano plane
+# Has 7 points connected by 7 lines, such that each line contains 3 points.
+# Any combination of two notes only occurs once. Which means that any two notes you pick impliy one third.
+1 2 4
+2 3 5
+3 4 6
+4 5 0
+5 6 1
+6 0 2
+0 1 3

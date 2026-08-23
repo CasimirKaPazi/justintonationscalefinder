@@ -12,6 +12,7 @@ __all__ = [
     'SIMPLE_INTERVALS', 'COMMAS',
     'mutate', 'crossover', 'create_random_scale',
     'scale_invert', 'scale_rotate',
+    'crossover_slotwise', 'repair_slots',
 ]
 
 SIMPLE_INTERVALS = [
@@ -243,6 +244,16 @@ def mutate(scale: List[Fraction], candidates: List[Fraction], config: SearchConf
     limit = config.ratio_limit
     required_set = set(config.required_notes) if config.required_notes else set()
     excluded_set = config.excluded_notes
+    
+    # In grouped mode, position is meaningful: a note's slot decides which
+    # sub-scales it belongs to. Swapping two slots leaves the pitch set alone
+    # and only changes the assignment, which is the move that explores group
+    # structure rather than pitch content. It has no effect ungrouped, where
+    # scales are kept sorted, so it is only offered when groups are in use.
+    if config.groups and len(scale) >= 2 and random.random() < 0.25:
+        i, j = random.sample(range(len(scale)), 2)
+        scale[i], scale[j] = scale[j], scale[i]
+        return scale
     
     # Indices of notes that can be mutated (not required)
     mutable_indices = [i for i, note in enumerate(scale) if note not in required_set]
@@ -515,10 +526,117 @@ def crossover_interval_preserving(parent1: List[Fraction], parent2: List[Fractio
     return child if child else parent1.copy()
 
 
+def repair_slots(genome: List[Fraction], target_len: int,
+                 candidates: List[Fraction], config: SearchConfig,
+                 weight_map: dict = None) -> List[Fraction]:
+    """
+    Restore a slot-order genome to exactly target_len distinct pitches.
+
+    Slot-order genomes can't be sanitized the ordinary way: dropping a
+    duplicate would shift every later note into a different slot and silently
+    rewrite the group structure. Instead duplicates and invalid entries are
+    blanked in place and refilled with unused candidates, so every other note
+    keeps its slot.
+
+    Returns None if the genome can't be repaired (too few candidates left, or
+    required notes can't fit).
+    """
+    excluded = config.excluded_notes or set()
+    required = list(config.required_notes) if config.required_notes else []
+
+    # Blank out duplicates and invalid entries, keeping first occurrence
+    slots = []
+    seen = set()
+    for r in genome[:target_len]:
+        if r is None:
+            slots.append(None)
+            continue
+        r = reduce_to_octave(r)
+        if (r == Fraction(1, 1) or r == Fraction(2, 1)
+                or r in seen or r in excluded):
+            slots.append(None)
+        else:
+            seen.add(r)
+            slots.append(r)
+
+    # Pad to target length
+    while len(slots) < target_len:
+        slots.append(None)
+
+    # Place any required notes that went missing into blank slots
+    missing_required = [r for r in required if r not in seen]
+    blanks = [i for i, s in enumerate(slots) if s is None]
+    if len(missing_required) > len(blanks):
+        return None  # Can't fit required notes without evicting others
+    for r in missing_required:
+        idx = blanks.pop(random.randrange(len(blanks)))
+        slots[idx] = r
+        seen.add(r)
+
+    # Fill remaining blanks with unused candidates, biased toward simpler ratios
+    if blanks:
+        available = [c for c in candidates if c not in seen and c not in excluded]
+        if len(available) < len(blanks):
+            return None
+        if weight_map:
+            weights = [weight_map.get(c, 0.001) for c in available]
+            for idx in blanks:
+                total = sum(weights)
+                if total <= 0:
+                    pick = random.randrange(len(available))
+                else:
+                    r = random.random() * total
+                    cumsum = 0.0
+                    pick = len(available) - 1
+                    for k, w in enumerate(weights):
+                        cumsum += w
+                        if r <= cumsum:
+                            pick = k
+                            break
+                slots[idx] = available.pop(pick)
+                weights.pop(pick)
+        else:
+            picks = random.sample(available, len(blanks))
+            for idx, note in zip(blanks, picks):
+                slots[idx] = note
+
+    return slots
+
+
+def crossover_slotwise(parent1: List[Fraction], parent2: List[Fraction],
+                       config: SearchConfig) -> List[Fraction]:
+    """
+    Uniform crossover that respects slot positions: each slot independently
+    takes its note from one parent or the other.
+
+    The ordinary crossover operators sort their parents and treat a scale as a
+    set of pitches, which destroys the slot assignment that grouped mode
+    depends on. This one inherits position and pitch together, so a good
+    sub-scale in one parent has a chance of surviving intact.
+
+    May produce duplicates; caller repairs with repair_slots.
+    """
+    n = min(len(parent1), len(parent2))
+    child = []
+    for i in range(n):
+        child.append(parent1[i] if random.random() < 0.5 else parent2[i])
+
+    # If parents differ in length, take the tail from the longer one
+    longer = parent1 if len(parent1) > len(parent2) else parent2
+    child.extend(longer[n:])
+    return child
+
+
 def crossover(parent1: List[Fraction], parent2: List[Fraction], config: SearchConfig) -> List[Fraction]:
     """
     Combine two scales using a randomly chosen crossover operator.
+    
+    In grouped mode only slot-wise crossover is used: the other operators sort
+    their parents, which would scramble the slot assignment.
     """
+    if config.groups:
+        return crossover_slotwise(parent1, parent2, config)
+    
     r = random.random()
     if r < 0.3:
         return crossover_uniform(parent1, parent2, config)

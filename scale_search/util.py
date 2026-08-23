@@ -61,14 +61,19 @@ def reduce_to_octave(ratio: Fraction) -> Fraction:
     return ratio
 
 
-def sanitize_scale(scale: List[Fraction]) -> List[Fraction]:
+def sanitize_scale(scale: List[Fraction], preserve_order: bool = False) -> List[Fraction]:
     """
     Ensure all ratios in a scale are valid (1 < r < 2).
     
     - Reduces any ratio >= 2 to the octave
     - Removes 1/1 and 2/1 (these are implicit)
-    - Removes duplicates
-    - Sorts by pitch
+    - Removes duplicates (keeping the first occurrence)
+    - Sorts by pitch, unless preserve_order is set
+    
+    preserve_order is for grouped (slot-order) genomes, where position carries
+    meaning — a note's slot decides which sub-scales it belongs to, so sorting
+    would scramble the structure. Note that dropping duplicates can shorten the
+    genome; grouped callers repair the length afterwards.
     """
     result = []
     seen = set()
@@ -87,6 +92,8 @@ def sanitize_scale(scale: List[Fraction]) -> List[Fraction]:
         seen.add(key)
         result.append(r)
     
+    if preserve_order:
+        return result
     return sorted(result, key=lambda x: float(x))
 
 

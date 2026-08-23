@@ -1,0 +1,33 @@
+# The 24 major and minor triads of a 12-note chromatic.
+#
+# Slot i is the i-th chromatic step, slot 0 the tonic. Major triad is
+# {0,4,7} transposed, minor {0,3,7}. This asks for a 12-note scale in which
+# every common-practice triad is consonant, ignoring scale membership.
+#
+# A stricter demand than the keys file in one way -- 24 constraints rather
+# than 12 -- and looser in another, since it says nothing about the
+# seven-note collections those triads live in.
+ 0  4  7   # C major triad
+ 1  5  8   # Db major triad
+ 2  6  9   # D major triad
+ 3  7 10   # Eb major triad
+ 4  8 11   # E major triad
+ 0  5  9   # F major triad
+ 1  6 10   # Gb major triad
+ 2  7 11   # G major triad
+ 0  3  8   # Ab major triad
+ 1  4  9   # A major triad
+ 2  5 10   # Bb major triad
+ 3  6 11   # B major triad
+ 0  3  7   # C minor triad
+ 1  4  8   # Db minor triad
+ 2  5  9   # D minor triad
+ 3  6 10   # Eb minor triad
+ 4  7 11   # E minor triad
+ 0  5  8   # F minor triad
+ 1  6  9   # Gb minor triad
+ 2  7 10   # G minor triad
+ 3  8 11   # Ab minor triad
+ 0  4  9   # A minor triad
+ 1  5 10   # Bb minor triad
+ 2  6 11   # B minor triad

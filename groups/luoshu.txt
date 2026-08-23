@@ -1,4 +1,4 @@
-# loushu magic square
+# luoshu magic square
 # 9 notes
 # 9 in the magic square is 0 here.
 4 0 2

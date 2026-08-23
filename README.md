@@ -198,6 +198,34 @@ python scale_search.py --groups 16cell.txt --metric soft_tenney
 Every slot must appear in at least one sub-scale, or its note would be
 unconstrained; this is checked and reported.
 
+**Slot numbering.** By default the search may put any pitch in any slot, which
+is right for polytopes, where the numbering is an arbitrary labelling of
+vertices. But when slot numbers carry their own meaning — chromatic steps, scale
+degrees — the search will otherwise satisfy the overlap pattern with unrelated
+notes: on the 12-key file below it produced a set where "C major" came out
+Phrygian. `--ordered-slots` requires slot *i* to hold the *i*-th lowest pitch,
+which fixes that.
+
+### Included group files
+
+`groups/` holds three files describing the common-practice 12-note vocabulary.
+All want `--ordered-slots`, since their slots are chromatic steps:
+
+| File | Sub-scales | Asks for |
+|------|-----------|----------|
+| `12tone-keys.txt` | 12 of 7 | a 12-note scale in which all 12 major keys work |
+| `12tone-triads.txt` | 24 of 3 | one in which all 24 major and minor triads are consonant |
+| `12tone-full.txt` | 48, mixed | keys, triads and dominant sevenths together |
+
+```bash
+python scale_search.py --groups groups/12tone-keys.txt --ordered-slots \
+    --metric "soft_tenney:1,barlow:1,propriety:0.5" --combine logloss
+```
+
+In 12-TET all twelve keys are identical by construction; in just intonation they
+cannot be, so these search for the best available compromise — effectively a
+well-temperament in JI. The per-key scores show where the compromise falls.
+
 ### How grouped scoring works
 
 Each sub-scale is transposed to its own tonic before scoring, so a metric means
@@ -242,6 +270,48 @@ programmatically, but it isn't printed: in testing every sub-scale came out a
 distinct shape even up to mode, on every structure, so a per-row shape column
 said the same thing on every line. The count is reported instead, as
 `Distinct sub-scale shapes`.
+
+### Pairwise rules
+
+For some structures the whole grouping reduces to a rule about pairs of notes,
+which is far easier to play from than a list of sub-scales. When that is the
+case, the output says so:
+
+```
+DO NOT COMBINE
+
+These pairs never occur together, grouped by their first note.
+Any pair not listed here is fine.
+Obeying this is equivalent to staying within a sub-scale.
+
+  1/1  never with  13/12
+  5/4  never with  4/3
+  3/2  never with  5/3
+
+# Don't play: 1/1 with 13/12; 5/4 with 4/3; 3/2 with 5/3
+```
+
+This is printed **only when the pairwise view is complete** — when every maximal
+set of mutually compatible notes is itself a sub-scale, so obeying the pair rule
+and staying inside a sub-scale are the same thing. Otherwise nothing is printed,
+because a pair list would then be a necessary condition wearing the costume of a
+rule: on the dodecahedron, 20 note sets avoid every forbidden pair without being
+one of the 12 faces.
+
+| Structure | Pairwise rule? |
+|---|---|
+| `octahedron` | yes — 3 forbidden pairs |
+| `16cell`, `16cell:cells+faces` | yes — 4 forbidden pairs |
+| `icosahedron` | yes — as permissions |
+| `24cell:faces`, `dodecahedron:edges` | yes — as permissions |
+| `cube`, `dodecahedron`, `24cell`, `tetrahedron` | no — nothing printed |
+
+Whichever of the two relations is shorter is the one shown. The dodecahedron's
+edges forbid 160 pairs but permit only 30, so it prints as `only with` instead.
+Note the asymmetry in how the two are listed: a prohibition is symmetric, so
+each forbidden pair is stated once and grouped under its first note, but a
+permission list has to be complete for every note or it would be false — so
+there each note carries its full set and every relation appears twice.
 
 Slot 0 always holds the tonic 1/1. On a vertex-transitive polytope that is an
 arbitrary symmetry break: facets containing slot 0 get simple ratios and tend to

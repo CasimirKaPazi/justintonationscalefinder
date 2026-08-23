@@ -5,7 +5,7 @@ import math
 import random
 import argparse
 
-from scale_search.config import SearchConfig
+from scale_search.config import SearchConfig, validate_combine_method, COMBINE_METHODS
 from scale_search.util import parse_ratios
 from scale_search.metrics import (
     CONSONANCE_METRICS, SCALE_METRICS,
@@ -95,7 +95,9 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
     parser.add_argument("--exclude", type=str, default=None,
                         help="Excluded notes (comma-separated ratios, e.g., '7/4,11/8')")
     parser.add_argument("--combine", type=str, default='geometric',
-                        help="How to combine interval scores: geometric (default), worst, mean, power2, power3, logloss")
+                        help="How to combine interval scores: geometric (default), "
+                             "worst, mean, power2, power3, logloss. Also used to combine "
+                             "sub-scale scores with --groups.")
     parser.add_argument("--random-seed", type=int, default=None, metavar="N",
                         help="Random seed for reproducible results")
     parser.add_argument("--quiet", action="store_true",
@@ -115,6 +117,11 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
                         help="With --groups: blend sub-scale quality with whole-scale "
                              "quality as local^(1-W) * global^W (default: 0.3). "
                              "0 = sub-scales only, 1 = whole scale only.")
+    parser.add_argument("--ordered-slots", action="store_true",
+                        help="With --groups: require slot i to hold the i-th lowest "
+                             "pitch. Use when slot numbers mean something (chromatic "
+                             "steps, scale degrees); leave off for polytopes, where "
+                             "the numbering is arbitrary.")
     parser.add_argument("--list-groups", action="store_true",
                         help="List available group structures and exit")
     parser.add_argument("--export-groups", type=str, default=None, metavar="FILE",
@@ -195,6 +202,12 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
     required_notes = parse_ratios(args.include) if args.include else []
     excluded_notes = parse_ratios(args.exclude) if args.exclude else []
     
+    try:
+        validate_combine_method(args.combine)
+    except ValueError as e:
+        print(f"Error: {e}")
+        return
+    
     # Parse group structure, if any
     structure = None
     if args.groups:
@@ -227,6 +240,7 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
             num_slots=structure.num_slots if structure else None,
             group_name=structure.name if structure else None,
             global_weight=args.global_weight,
+            ordered_slots=args.ordered_slots,
         )
     except ValueError as e:
         print(f"Error: {e}")
@@ -363,6 +377,7 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
     # Sub-scale breakdown
     if structure:
         _print_group_results(scale, details, structure, verbose)
+        _print_incompatible_pairs(scale, structure, verbose)
 
     # The scale itself
     if verbose:
@@ -458,6 +473,96 @@ def _print_group_results(scale, details, structure, verbose):
             desc = ', '.join(f"{c} pairs share {n} notes"
                              for n, c in sorted(shares.items(), reverse=True))
             print(f"Adjacency: {desc}")
+
+
+def _print_incompatible_pairs(scale, structure, verbose):
+    """
+    State the pairwise rule for combining notes, when there is one.
+
+    Printed only when the pairwise view is complete — when every maximal set of
+    mutually compatible notes is itself a sub-scale, so "obey these pair rules"
+    and "stay inside a sub-scale" say the same thing. For structures where it
+    isn't (cube, dodecahedron, 24-cell by cells) a pair list would be a
+    necessary condition masquerading as the rule, so nothing is printed and the
+    sub-scale listing stands on its own.
+
+    Whichever of the forbidden and permitted relations is shorter is the one
+    shown: the dodecahedron's edges forbid 160 pairs but permit only 30, and
+    "only play X with ..." is the same information at a fifth the length.
+    """
+    if not structure.exclusions_are_exact():
+        return
+
+    forbidden = structure.incompatible_pairs()
+    if not forbidden:
+        return
+
+    n = structure.num_slots
+    all_pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
+    permitted = [p for p in all_pairs if p not in set(forbidden)]
+
+    invert = len(permitted) < len(forbidden)
+    relation = permitted if invert else forbidden
+
+    full_slots = slots_to_pitches(scale)
+    # Order by pitch so the table reads like the scale does; each relation is
+    # stated once, under whichever of its two notes comes first.
+    order = sorted(range(n), key=lambda i: full_slots[i])
+    rank = {slot: pos for pos, slot in enumerate(order)}
+
+    partners = {i: [] for i in range(n)}
+    if invert:
+        # A permission list must be complete for every note: "4/3 only with X"
+        # is false if 4/3's other permitted partners were folded into their own
+        # rows. So each note carries its full set, and every relation appears
+        # under both of its notes.
+        for a, b in relation:
+            partners[a].append(b)
+            partners[b].append(a)
+    else:
+        # A prohibition is symmetric, so stating each pair once is complete —
+        # this is a list of forbidden pairs grouped by their first note, not a
+        # per-note table, and it is labelled as such below.
+        for a, b in relation:
+            lo, hi = (a, b) if rank[a] < rank[b] else (b, a)
+            partners[lo].append(hi)
+
+    rows = []
+    for slot in order:
+        if partners[slot]:
+            others = sorted(partners[slot], key=lambda x: rank[x])
+            rows.append((slot, others))
+    if not rows:
+        return
+
+    def name(i):
+        r = full_slots[i]
+        return f"{r.numerator}/{r.denominator}"
+
+    print()
+    print("=" * 60)
+    print("ONLY COMBINE" if invert else "DO NOT COMBINE")
+    print("=" * 60)
+    print()
+    if invert:
+        print("Each note may only sound together with the notes beside it.")
+    else:
+        print("These pairs never occur together, grouped by their first note.")
+        print("Any pair not listed here is fine.")
+    print("Obeying this is equivalent to staying within a sub-scale.")
+    print()
+
+    width = max(len(name(slot)) for slot, _ in rows)
+    joiner = "  only with  " if invert else "  never with  "
+    for slot, others in rows:
+        print(f"  {name(slot):>{width}s}{joiner}{', '.join(name(o) for o in others)}")
+
+    if verbose:
+        lead = "# Only play" if invert else "# Don't play"
+        parts = '; '.join(f"{name(slot)} with {', '.join(name(o) for o in others)}"
+                          for slot, others in rows)
+        print()
+        print(f"{lead}: {parts}")
 
 
 def _handle_compare(args, metrics, scale_metrics, edo):

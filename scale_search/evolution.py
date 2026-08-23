@@ -7,7 +7,7 @@ import time
 from fractions import Fraction
 from typing import List, Set, Tuple
 
-from scale_search.config import SearchConfig
+from scale_search.config import SearchConfig, validate_combine_method
 from scale_search.util import generate_candidate_ratios, sanitize_scale, reduce_to_octave
 
 __all__ = [
@@ -76,8 +76,13 @@ def combine_penalties(penalties: List[float], combine_method: str = 'geometric')
         log_loss_raw = sum(-math.log(1 - s) for s in clamped) / len(clamped)
         return 1 - math.exp(-log_loss_raw)
     
-    # 'mean' or default: arithmetic mean
-    return sum(penalties) / len(penalties)
+    if combine_method == 'mean':
+        return sum(penalties) / len(penalties)
+    
+    # No silent fallback: an unrecognized name means the caller asked for
+    # something they aren't getting.
+    raise ValueError(validate_combine_method.__doc__ and
+                     f"Unknown combine method '{combine_method}'")
 
 
 def evaluate_scale(scale: List[Fraction], 
@@ -648,7 +653,7 @@ def evolve(config: SearchConfig, verbose: bool = True,
         num_ratios = config.target_num_ratios()
         scale = create_random_scale(candidates, num_ratios, candidate_weights,
                                     required=required_notes, excluded=excluded_notes)
-        if grouped:
+        if grouped and not config.ordered_slots:
             random.shuffle(scale)
         return scale
     

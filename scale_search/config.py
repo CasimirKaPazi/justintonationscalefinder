@@ -6,6 +6,31 @@ from fractions import Fraction
 from typing import List, Set, Tuple
 
 
+COMBINE_METHODS = ['geometric', 'worst', 'mean', 'logloss', 'power2', 'power3']
+
+
+def validate_combine_method(name: str) -> str:
+    """
+    Check a combine method name, raising ValueError on anything unrecognized.
+
+    Unknown names used to fall through to the arithmetic mean, so a typo like
+    'geometic' silently ran a different and much more forgiving combination
+    than the one asked for, with nothing in the output to show it.
+    """
+    if name in COMBINE_METHODS:
+        return name
+    if name.startswith('power'):
+        suffix = name[5:]
+        if suffix == '' or (suffix.isdigit() and 1 <= int(suffix) <= 10):
+            return name
+    import difflib
+    close = difflib.get_close_matches(name, COMBINE_METHODS, n=1, cutoff=0.6)
+    hint = f" Did you mean '{close[0]}'?" if close else ""
+    raise ValueError(
+        f"Unknown combine method '{name}'.{hint} "
+        f"Valid: {', '.join(COMBINE_METHODS)}, or powerN for N in 1-10.")
+
+
 @dataclass
 class SearchConfig:
     """
@@ -56,6 +81,12 @@ class SearchConfig:
     groups: List[Tuple[int, ...]] = None
     num_slots: int = None
     group_name: str = None
+    # When True, slot i must hold the i-th lowest pitch. Group structures whose
+    # slot numbering carries its own meaning -- chromatic step, scale degree --
+    # need this, or the search will permute the assignment and satisfy the
+    # overlap pattern with unrelated notes. Polytope slots have no such meaning
+    # and are left free.
+    ordered_slots: bool = False
     # Blend between sub-scale quality and whole-scale quality:
     # final = local^(1 - global_weight) * global^global_weight
     global_weight: float = 0.3
@@ -81,6 +112,8 @@ class SearchConfig:
             if not (0.0 <= self.global_weight <= 1.0):
                 raise ValueError(
                     f"global_weight must be between 0 and 1, got {self.global_weight}")
+        
+        self.combine_method = validate_combine_method(self.combine_method)
         
         if self.min_notes > self.max_notes:
             self.min_notes, self.max_notes = self.max_notes, self.min_notes

@@ -250,7 +250,8 @@ def mutate(scale: List[Fraction], candidates: List[Fraction], config: SearchConf
     # and only changes the assignment, which is the move that explores group
     # structure rather than pitch content. It has no effect ungrouped, where
     # scales are kept sorted, so it is only offered when groups are in use.
-    if config.groups and len(scale) >= 2 and random.random() < 0.25:
+    if (config.groups and not config.ordered_slots
+            and len(scale) >= 2 and random.random() < 0.25):
         i, j = random.sample(range(len(scale)), 2)
         scale[i], scale[j] = scale[j], scale[i]
         return scale
@@ -599,6 +600,9 @@ def repair_slots(genome: List[Fraction], target_len: int,
             picks = random.sample(available, len(blanks))
             for idx, note in zip(blanks, picks):
                 slots[idx] = note
+
+    if getattr(config, 'ordered_slots', False):
+        slots.sort()
 
     return slots
 

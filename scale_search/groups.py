@@ -85,6 +85,62 @@ class GroupStructure:
                     result.append((i, j, shared))
         return result
 
+    def incompatible_pairs(self) -> List[Tuple[int, int]]:
+        """
+        Slot pairs that never share a sub-scale.
+
+        Often a shorter description of a structure than the sub-scale list:
+        the octahedron's 8 faces are equivalent to just 3 forbidden pairs (its
+        antipodal vertices).
+        """
+        together = set()
+        for g in self.groups:
+            for pair in combinations(sorted(g), 2):
+                together.add(pair)
+        return [p for p in combinations(range(self.num_slots), 2)
+                if p not in together]
+
+    def _cooccurrence(self):
+        """Adjacency sets of the graph 'these two slots share a sub-scale'."""
+        adj = {i: set() for i in range(self.num_slots)}
+        for g in self.groups:
+            for a, b in combinations(sorted(g), 2):
+                adj[a].add(b)
+                adj[b].add(a)
+        return adj
+
+    def maximal_cliques(self) -> List[Tuple[int, ...]]:
+        """Maximal sets of mutually compatible slots (Bron-Kerbosch, pivoted)."""
+        adj = self._cooccurrence()
+        out = []
+
+        def expand(r, p, x):
+            if not p and not x:
+                out.append(tuple(sorted(r)))
+                return
+            pivot = max(p | x, key=lambda u: len(adj[u]))
+            for v in list(p - adj[pivot]):
+                expand(r | {v}, p & adj[v], x & adj[v])
+                p = p - {v}
+                x = x | {v}
+
+        expand(set(), set(range(self.num_slots)), set())
+        return sorted(out)
+
+    def exclusions_are_exact(self) -> bool:
+        """
+        Whether the forbidden pairs fully determine the sub-scales.
+
+        True when every maximal set of mutually compatible slots is itself a
+        sub-scale — then "avoid these pairs" and "play these sub-scales" say
+        the same thing. False when some combination avoids every forbidden pair
+        without being a sanctioned sub-scale, which happens whenever sub-scales
+        are nested (a 16-cell triangle sits inside a tetrahedron, so the
+        triangles impose no pair restriction the tetrahedra don't already).
+        """
+        groups = {tuple(sorted(g)) for g in self.groups}
+        return all(c in groups for c in self.maximal_cliques())
+
     def summary(self) -> str:
         size = self.group_size
         size_desc = f"{size}" if size is not None else "mixed size"

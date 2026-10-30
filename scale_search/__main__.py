@@ -5,10 +5,15 @@ import json
 import math
 import os
 import random
+import shlex
 import sys
+from datetime import date
+from fractions import Fraction
 
 from scale_search.config import SearchConfig, validate_combine_method, normalize_notes
-from scale_search.util import parse_ratios, generate_candidate_ratios, snap_to_candidates
+from scale_search.util import (
+    parse_ratios, generate_candidate_ratios, snap_to_candidates, reduce_to_octave,
+)
 from scale_search.metrics import (
     CONSONANCE_METRICS, SCALE_METRICS,
     parse_metrics, init_normalization, format_metric_description,
@@ -91,10 +96,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--notes", type=int, default=None,
                         help="Exact number of notes including tonic (default: 7). "
                              "Ignored with --groups, which sets its own note count.")
-    parser.add_argument("--max-notes", type=int, default=7,
-                        help="Maximum notes in scale (default: 7)")
-    parser.add_argument("--min-notes", type=int, default=3,
-                        help="Minimum notes in scale (default: 3)")
+    parser.add_argument("--max-notes", type=int, default=None,
+                        help="Maximum notes in scale (default: 7; with "
+                             "--export-seeds: no limit)")
+    parser.add_argument("--min-notes", type=int, default=None,
+                        help="Minimum notes in scale (default: 3; with "
+                             "--export-seeds: no limit)")
     parser.add_argument("--ratio-limit", type=int, default=64,
                         help="Max numerator/denominator (default: 64)")
     parser.add_argument("--generations", type=int, default=500,
@@ -110,15 +117,29 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Initial SA temperature (default: 0.1, higher=more exploration)")
     parser.add_argument("--octaves", type=int, default=1,
                         help="Octave range (default: 1 = 3 octaves, 0=single, 2=5 octaves)")
-    parser.add_argument("--seeds", type=str, default=None,
+    parser.add_argument("--seeds", type=str, action="append", default=None, metavar="PATH",
                         help="Seed scales to initialize the population: a seed file, a "
                              ".scl file, or a directory of .scl files such as the Scala "
-                             "archive (default: none)")
+                             "archive. May be given several times; the sources are "
+                             "combined (default: none)")
     parser.add_argument("--max-seeds", type=int, default=None, metavar="N",
                         help="Most initial individuals that may come from seeds, best "
                              "first; each seed also contributes its inversion and some "
                              "rotations. The rest of the population starts random. "
                              "Default: half of --population.")
+    parser.add_argument("--export-seeds", type=str, default=None, metavar="FILE",
+                        help="Instead of searching: combine all --seeds sources, keep "
+                             "the scales that fit the note count and --include/--exclude, "
+                             "rank them with --metric, and write them to FILE as a seed "
+                             "file. Archive scales are snapped to ratios under "
+                             "--ratio-limit; modes of the same scale are kept once.")
+    parser.add_argument("--top", type=int, default=None, metavar="N",
+                        help="With --export-seeds: keep the best N scales per note "
+                             "count (default: all)")
+    parser.add_argument("--save-result", type=str, default=None, metavar="FILE",
+                        help="Append the best scale found to FILE in seed-file format, "
+                             "with the quality and command line as comments, so it can "
+                             "be used with --seeds or --compare later")
     parser.add_argument("--include", type=str, default=None,
                         help="Required notes (comma-separated ratios, e.g., '3/2,5/4')")
     parser.add_argument("--exclude", type=str, default=None,
@@ -207,9 +228,27 @@ def _validate_args(args):
     except ValueError:
         _fail(f"--edo-range must be MIN:MAX with 2 <= MIN <= MAX, got '{args.edo_range}'")
 
-    for flag, path in (("--seeds", args.seeds), ("--reference", args.reference)):
+    paths = [("--seeds", p) for p in (args.seeds or [])]
+    paths.append(("--reference", args.reference))
+    for flag, path in paths:
         if path and not os.path.exists(path):
             _fail(f"{flag}: '{path}' not found")
+
+    if args.top is not None:
+        if args.export_seeds is None:
+            _fail("--top only applies with --export-seeds")
+        if args.top < 1:
+            _fail(f"--top must be at least 1 (got {args.top})")
+    if args.export_seeds is not None:
+        if not args.seeds:
+            _fail("--export-seeds needs at least one --seeds source to read from")
+        if args.compare is not False:
+            _fail("--export-seeds and --compare cannot be combined")
+        if args.save_result:
+            _fail("--export-seeds does not search, so there is no result to "
+                  "--save-result")
+        if os.path.abspath(args.export_seeds) in {os.path.abspath(p) for p in args.seeds}:
+            _fail("--export-seeds would overwrite one of its own --seeds sources")
 
     try:
         validate_combine_method(args.combine)
@@ -339,8 +378,8 @@ def main(argv=None):
 
     try:
         config = SearchConfig(
-            max_notes=args.max_notes,
-            min_notes=args.min_notes,
+            max_notes=7 if args.max_notes is None else args.max_notes,
+            min_notes=3 if args.min_notes is None else args.min_notes,
             fixed_notes=args.notes,
             ratio_limit=args.ratio_limit,
             generations=args.generations,
@@ -369,16 +408,25 @@ def main(argv=None):
     verbose = not args.quiet
 
     # Load seed scales if specified (with names for matching)
+    if args.export_seeds is not None:
+        _export_seeds(args, config, verbose)
+        return
+
     seed_scales = None
     seed_names = None
-    if args.seeds:
-        if os.path.isdir(args.seeds) or args.seeds.lower().endswith('.scl'):
-            seed_scales, seed_names = _seeds_from_archive(args.seeds, config,
-                                                          args, verbose)
+    for path in args.seeds or []:
+        if _is_archive(path):
+            scales, names = _seeds_from_archive(path, config, args, verbose)
         else:
-            seed_scales, seed_names = load_seed_scales(args.seeds, with_names=True)
+            # A grouped genome is in slot order, as --save-result writes it,
+            # so keep the file's order instead of sorting by pitch
+            scales, names = load_seed_scales(path, with_names=True,
+                                             preserve_order=bool(structure))
             if verbose:
-                print(f"Loaded {len(seed_scales)} seed scales from {args.seeds}")
+                print(f"Loaded {len(scales)} seed scales from {path}")
+        if scales:
+            seed_scales = (seed_scales or []) + scales
+            seed_names = (seed_names or []) + names
 
     # Build descriptions
     metric_desc = format_metric_description(metrics, scale_metrics, edo)
@@ -444,6 +492,10 @@ def main(argv=None):
 
     scale, fitness, details = best_overall
     analysis = _analysis_data(scale, args) if args.analyze else None
+
+    if args.save_result:
+        _save_result(args.save_result, scale, details, structure,
+                     argv if argv is not None else sys.argv[1:], verbose)
 
     # In grouped mode `details` describe the whole scale, so the breakdown
     # reports the metrics the whole scale was scored with
@@ -684,6 +736,58 @@ def _print_incompatible_pairs(scale, structure, verbose):
         print(f"{lead}: {parts}")
 
 
+def _is_archive(path):
+    """A Scala archive directory or a single .scl file, as opposed to a seed file."""
+    return os.path.isdir(path) or path.lower().endswith('.scl')
+
+
+def _snap_archive(path, config, args, size_lo, size_hi):
+    """
+    Archive scales between size_lo and size_hi notes, snapped to ratios the
+    search can express, without those containing excluded notes. Exact
+    duplicates after snapping are kept once.
+
+    Returns (kept, stats, skipped): kept is a list of dicts with the snapped
+    scale, its description, file and how far snapping moved it; skipped counts
+    what was set aside and why.
+    """
+    scales, names, files, stats = load_reference_scales(
+        path, octave_only=not args.include_non_octave)
+    skipped = {'wrong_size': 0, 'unsnappable': 0, 'excluded': 0}
+    if not scales:
+        return [], stats, skipped
+
+    candidates = sorted(generate_candidate_ratios(config.ratio_limit)[0])
+    cand_cents = [1200.0 * math.log2(float(c)) for c in candidates]
+
+    kept = []
+    seen = set()
+    for ratios, name, fn in zip(scales, names, files):
+        notes = len(ratios) + 1
+        if not (size_lo <= notes <= size_hi):
+            skipped['wrong_size'] += 1
+            continue
+        snapped = snap_to_candidates(ratios, candidates, cand_cents)
+        if snapped is None:
+            skipped['unsnappable'] += 1
+            continue
+        if config.excluded_notes and any(r in config.excluded_notes for r in snapped):
+            # Required notes are added by the search if missing; excluded ones
+            # would be dropped and replaced, so they don't disqualify a seed,
+            # but a seed built around a forbidden note is a poor start
+            skipped['excluded'] += 1
+            continue
+        key = tuple((r.numerator, r.denominator) for r in snapped)
+        if key in seen:
+            continue
+        seen.add(key)
+        shift = max((abs(1200.0 * math.log2(float(a) / float(b)))
+                     for a, b in zip(sorted(ratios), sorted(snapped))), default=0.0)
+        kept.append({'scale': snapped, 'name': name, 'file': fn,
+                     'notes': notes, 'shift': shift})
+    return kept, stats, skipped
+
+
 def _seeds_from_archive(path, config, args, verbose):
     """
     Draw seeds from a Scala archive directory or .scl file.
@@ -707,13 +811,6 @@ def _seeds_from_archive(path, config, args, verbose):
          search applies the same limit again once inversions and rotations
          are added.
     """
-    scales, names, files, stats = load_reference_scales(
-        path, octave_only=not args.include_non_octave)
-    if not scales:
-        if verbose:
-            print(f"No usable scales found in {path}")
-        return None, None
-
     if config.fixed_notes is not None:
         target_lo = target_hi = config.fixed_notes
     else:
@@ -724,33 +821,11 @@ def _seeds_from_archive(path, config, args, verbose):
     size_desc = (f"{target_lo} notes" if target_lo == target_hi
                  else f"{target_lo}-{target_hi} notes")
 
-    candidates = sorted(generate_candidate_ratios(config.ratio_limit)[0])
-    cand_cents = [1200.0 * math.log2(float(c)) for c in candidates]
-
-    kept, wrong_size, unsnappable, failed_constraints = [], 0, 0, 0
-    seen = set()
-    for ratios, name, fn in zip(scales, names, files):
-        notes = len(ratios) + 1
-        if not (band_lo <= notes <= band_hi):
-            wrong_size += 1
-            continue
-        snapped = snap_to_candidates(ratios, candidates, cand_cents)
-        if snapped is None:
-            unsnappable += 1
-            continue
-        if config.excluded_notes and any(r in config.excluded_notes for r in snapped):
-            # Required notes are added by the search if missing; excluded ones
-            # would be dropped and replaced, so they don't disqualify a seed,
-            # but a seed built around a forbidden note is a poor start
-            failed_constraints += 1
-            continue
-        key = tuple((r.numerator, r.denominator) for r in snapped)
-        if key in seen:
-            continue
-        seen.add(key)
-        exact = target_lo <= notes <= target_hi
-        kept.append((snapped, name, fn, exact))
-
+    kept, stats, skipped = _snap_archive(path, config, args, band_lo, band_hi)
+    if not stats['loaded']:
+        if verbose:
+            print(f"No usable scales found in {path}")
+        return None, None
     if not kept:
         if verbose:
             print(f"No scales in {path} usable as seeds "
@@ -760,12 +835,13 @@ def _seeds_from_archive(path, config, args, verbose):
 
     scored = []
     interval_cache = {}
-    for snapped, name, fn, exact in kept:
-        fitness, _ = evaluate_scale(snapped, config.metrics,
+    for k in kept:
+        fitness, _ = evaluate_scale(k['scale'], config.metrics,
                                     config.octave_range, interval_cache,
                                     config.scale_metrics, config.edo,
                                     config.combine_method)
-        scored.append((fitness, snapped, name, fn, exact))
+        exact = target_lo <= k['notes'] <= target_hi
+        scored.append((fitness, k['scale'], k['name'], k['file'], exact))
     # Right-sized scales first: a resized seed has had notes invented or
     # discarded at random, so it carries less of the original scale than its
     # score suggests.
@@ -786,13 +862,13 @@ def _seeds_from_archive(path, config, args, verbose):
                   f"{n_resized} to be resized by the search "
                   f"(from {band_lo}-{band_hi} notes)")
         reasons = []
-        if wrong_size:
-            reasons.append(f"{wrong_size} outside {band_lo}-{band_hi} notes")
-        if unsnappable:
-            reasons.append(f"{unsnappable} outside ratio limit "
+        if skipped['wrong_size']:
+            reasons.append(f"{skipped['wrong_size']} outside {band_lo}-{band_hi} notes")
+        if skipped['unsnappable']:
+            reasons.append(f"{skipped['unsnappable']} outside ratio limit "
                            f"{config.ratio_limit}")
-        if failed_constraints:
-            reasons.append(f"{failed_constraints} contain excluded notes")
+        if skipped['excluded']:
+            reasons.append(f"{skipped['excluded']} contain excluded notes")
         if reasons:
             print(f"  Skipped: {', '.join(reasons)}")
         best = chosen[0]
@@ -800,6 +876,196 @@ def _seeds_from_archive(path, config, args, verbose):
         print(f"  Best seed: {label} (quality {best[0]:.4f})")
 
     return [c[1] for c in chosen], [c[3] or c[2] for c in chosen]
+
+
+def _mode_key(scale):
+    """
+    The same key for a scale and all of its modes: the lowest of the scales
+    obtained by taking each note in turn as the tonic.
+    """
+    full = [Fraction(1)] + list(scale)
+    keys = []
+    for tonic in full:
+        mode = sorted(reduce_to_octave(r / tonic) for r in full if r != tonic)
+        keys.append(tuple((r.numerator, r.denominator) for r in mode))
+    return min(keys)
+
+
+def _format_pitch_lines(scale):
+    """Seed-file lines: one ratio per line with its cents, ending in 2/1."""
+    lines = []
+    for r in list(scale) + [Fraction(2)]:
+        text = f"{r.numerator}/{r.denominator}"
+        lines.append(f"{text:<12}{1200.0 * math.log2(float(r)):7.1f}")
+    return lines
+
+
+def _export_seeds(args, config, verbose):
+    """
+    --export-seeds: merge every --seeds source into one ranked seed file.
+
+    Scales are kept if their note count is within what was given (--notes,
+    --min-notes and/or --max-notes, or the --groups slot count) and they satisfy
+    --include and --exclude, the same filter as --compare. Archive scales are
+    snapped as for seeding, so the file holds what the search would actually
+    start from; seed-file scales are copied as written. Each scale is scored on
+    its own with --metric — in grouped mode too, as when an archive is used for
+    seeding — and of a scale and its modes only the best-scoring one is kept,
+    since the search adds rotations of every seed itself.
+    """
+    # The search's default range of 3-7 notes is not applied here: without an
+    # explicit note count, every size is exported
+    if config.groups or args.notes is not None:
+        size_lo, size_hi = config.min_notes, config.max_notes
+    else:
+        size_lo = 2 if args.min_notes is None else args.min_notes
+        size_hi = math.inf if args.max_notes is None else args.max_notes
+        if size_lo > size_hi:
+            size_lo, size_hi = size_hi, size_lo
+    if size_lo == size_hi:
+        size_desc = f"with {size_lo} notes"
+    elif size_hi == math.inf:
+        size_desc = "of any size" if size_lo <= 2 else f"with {size_lo} or more notes"
+    else:
+        size_desc = f"with {size_lo}-{size_hi} notes"
+    entries = []
+    for path in args.seeds:
+        if _is_archive(path):
+            kept, stats, skipped = _snap_archive(path, config, args, size_lo, size_hi)
+            for k in kept:
+                label = f"{k['file']}: {k['name']}" if k['file'] and k['name'] else (k['file'] or k['name'])
+                entries.append({'scale': k['scale'], 'name': label, 'source': path,
+                                'shift': k['shift']})
+            if verbose:
+                extra = (f", {skipped['unsnappable']} not expressible under ratio "
+                         f"limit {config.ratio_limit}" if skipped['unsnappable'] else "")
+                if stats['too_large']:
+                    extra += f", {stats['too_large']} over 100 notes not loaded"
+                print(f"{path}: {stats['loaded']} scales, {len(kept)} usable "
+                      f"{size_desc}{extra}")
+        else:
+            scales, names = load_seed_scales(path, with_names=True)
+            n_before = len(entries)
+            for i, (sc, name) in enumerate(zip(scales, names)):
+                if size_lo <= len(sc) + 1 <= size_hi:
+                    entries.append({'scale': sc, 'name': name or f"{os.path.basename(path)} #{i + 1}",
+                                    'source': path, 'shift': 0.0})
+            if verbose:
+                print(f"{path}: {len(scales)} scales, {len(entries) - n_before} "
+                      f"{size_desc}")
+
+    required = set(config.required_notes)
+    excluded = config.excluded_notes
+    entries = [e for e in entries
+               if required <= set(e['scale']) and not (excluded & set(e['scale']))]
+
+    interval_cache = {}
+    for e in entries:
+        e['quality'], _ = evaluate_scale(e['scale'], config.metrics, config.octave_range,
+                                         interval_cache, config.scale_metrics,
+                                         config.edo, config.combine_method)
+
+    # One scale per mode family: the best-scoring mode, or the first source's
+    # version when they score the same
+    best_by_key = {}
+    for e in entries:
+        key = _mode_key(e['scale'])
+        if key not in best_by_key or e['quality'] > best_by_key[key]['quality']:
+            best_by_key[key] = e
+    duplicates = len(entries) - len(best_by_key)
+
+    by_size = {}
+    for e in best_by_key.values():
+        by_size.setdefault(len(e['scale']) + 1, []).append(e)
+    lines = [f"# Seed scales exported by scale_search, {date.today().isoformat()}",
+             "! Lines starting with ! are details and are ignored when loading.",
+             f"! Sources: {', '.join(args.seeds)}",
+             f"! Ranked by: {format_metric_description(config.metrics, config.scale_metrics, config.edo)}; "
+             f"ratio limit {config.ratio_limit}, {2 * config.octave_range + 1} octaves, "
+             f"{config.combine_method}"]
+    if config.required_notes or excluded:
+        parts = []
+        if config.required_notes:
+            parts.append("include " + ",".join(str(r) for r in config.required_notes))
+        if excluded:
+            parts.append("exclude " + ",".join(str(r) for r in sorted(excluded)))
+        lines.append(f"! Filter: {'; '.join(parts)}")
+    summary = []
+    written = 0
+    body = []
+    for size in sorted(by_size):
+        group = sorted(by_size[size], key=lambda e: -e['quality'])
+        top = group[:args.top] if args.top else group
+        summary.append(f"{size} notes: {len(top)} of {len(group)}")
+        for e in top:
+            body.append("")
+            body.append(f"# {e['name']}")
+            detail = f"! {size} notes, quality {e['quality']:.4f}, from {e['source']}"
+            if e['shift'] > 0.05:
+                detail += f"; snapped, notes moved up to {e['shift']:.1f} cents"
+            body.append(detail)
+            body.extend(_format_pitch_lines(e['scale']))
+            written += 1
+    lines.append(f"! Kept: {'; '.join(summary) if summary else 'none'}"
+                 + (f" (best {args.top} per note count)" if args.top else ""))
+    if duplicates:
+        lines.append(f"! {duplicates} duplicates or modes of a kept scale left out")
+
+    if not written:
+        _fail(f"No scales {size_desc} matching the filters "
+              f"in {', '.join(args.seeds)}; nothing written")
+    try:
+        with open(args.export_seeds, 'w', encoding='utf-8') as f:
+            f.write("\n".join(lines + body) + "\n")
+    except OSError as e:
+        _fail(f"--export-seeds: cannot write '{args.export_seeds}': {e}")
+    if not args.quiet:
+        print(f"Wrote {written} scale{'s' if written != 1 else ''} to {args.export_seeds} ({'; '.join(summary)}"
+              + (f"; {duplicates} duplicates or modes left out" if duplicates else "")
+              + ")")
+
+
+def _save_result(path, scale, details, structure, argv, verbose):
+    """
+    --save-result: append the result to a seed file.
+
+    Grouped results are written in slot order — slot 1 first, slot 0 being
+    the tonic 1/1 — because that order decides which notes form which
+    sub-scales. Loaded with --groups, a seed file keeps its order, so the
+    saved result seeds exactly the same assignment.
+    """
+    notes = len(scale) + 1
+    what = f"{structure.name}" if structure else f"{notes} notes"
+    lines = [f"# Result {date.today().isoformat()}, {what}, quality {details['quality']:.4f}",
+             f"! Command: scale_search {shlex.join(argv)}"]
+    if structure:
+        lines.append(f"! Slot order for --groups {structure.name} (slot 0 = 1/1 "
+                     f"not listed); the order is kept when loaded with --groups")
+    lines.extend(_format_pitch_lines(scale))
+    try:
+        needs_gap = os.path.exists(path) and os.path.getsize(path) > 0
+        with open(path, 'a', encoding='utf-8') as f:
+            f.write(("\n" if needs_gap else "") + "\n".join(lines) + "\n")
+    except OSError as e:
+        print(f"Warning: could not save the result to '{path}': {e}", file=sys.stderr)
+        return
+    if verbose:
+        print(f"Result appended to {path}")
+
+
+def _load_libraries(paths, args):
+    """load_reference_scales over several sources, results and stats combined."""
+    scales, names, files = [], [], []
+    stats = {}
+    for path in paths:
+        s, n, f, st = load_reference_scales(path, octave_only=not args.include_non_octave)
+        scales += s
+        names += n
+        # With several sources a seed file's scales need their file named too
+        files += [fn if fn or len(paths) == 1 else os.path.basename(path) for fn in f]
+        for k, v in st.items():
+            stats[k] = stats.get(k, 0) + v
+    return scales, names, files, stats
 
 
 def _relation_tags(m):
@@ -833,11 +1099,10 @@ def _analysis_data(scale, args) -> dict:
     """
     data = {'source': None, 'stats': None, 'matches': [], 'edo': None}
 
-    source = args.reference or args.seeds
-    if source:
-        ref_scales, ref_names, ref_files, stats = load_reference_scales(
-            source, octave_only=not args.include_non_octave)
-        data['source'] = source
+    sources = [args.reference] if args.reference else (args.seeds or [])
+    if sources:
+        ref_scales, ref_names, ref_files, stats = _load_libraries(sources, args)
+        data['source'] = ', '.join(sources)
         data['stats'] = stats
         data['matches'] = nearest_scales(scale, ref_scales, ref_names, top=5,
                                          sources=ref_files)
@@ -963,11 +1228,10 @@ def _handle_compare(args, metrics, scale_metrics, edo, required_notes, excluded_
 
     if args.compare is True:
         if args.seeds:
-            # Seed file, single .scl file or a whole archive
-            scales, names, files, _ = load_reference_scales(
-                args.seeds, octave_only=not args.include_non_octave)
+            # Seed files, single .scl files or whole archives
+            scales, names, files, _ = _load_libraries(args.seeds, args)
             if not scales:
-                print(f"No scales found in {args.seeds}")
+                print(f"No scales found in {', '.join(args.seeds)}")
                 return
             for i, (scale_ratios, name, fn) in enumerate(zip(scales, names, files)):
                 label = fn or name or f"Scale #{i + 1}"

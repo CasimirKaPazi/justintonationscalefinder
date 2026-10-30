@@ -40,7 +40,8 @@ def _parse_seed_line(line: str) -> Optional[Fraction]:
     return ratio if ratio > 0 else None
 
 
-def load_seed_scales(filepath: str, with_names: bool = False):
+def load_seed_scales(filepath: str, with_names: bool = False,
+                     preserve_order: bool = False):
     """
     Load seed scales from a file. Supports both simple format and Scala .scl format.
 
@@ -80,6 +81,8 @@ def load_seed_scales(filepath: str, with_names: bool = False):
     Args:
         filepath: Path to seed file
         with_names: If True, return (scales, names) tuple
+        preserve_order: Keep each scale's notes in file order instead of
+            sorting them by pitch, for grouped seeds written in slot order
 
     Returns:
         If with_names=False: List of scales (each scale is a list of Fractions)
@@ -105,7 +108,7 @@ def load_seed_scales(filepath: str, with_names: bool = False):
             if current_scale[-1] == Fraction(2, 1):
                 current_scale = current_scale[:-1]
             if current_scale:
-                current_scale = sanitize_scale(current_scale)
+                current_scale = sanitize_scale(current_scale, preserve_order)
                 if current_scale:
                     scales.append(current_scale)
                     names.append(current_name)

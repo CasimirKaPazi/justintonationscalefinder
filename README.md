@@ -11,8 +11,8 @@ This was created with Claude (Anthropic).
 - **Interval combination methods**: Geometric mean (default), worst-case, arithmetic mean, power mean, log loss
 - **Evolutionary optimization**: Genetic algorithm with simulated annealing, adaptive mutation, and fingerprint-based diversity
 - **Flexible constraints**: Required/excluded notes, variable note counts, ratio complexity limits
-- **Sub-scale groups**: Optimize a large scale that decomposes into playable sub-scales, using regular polytopes (dodecahedron, 24-cell, ...), cyclic windows, or a custom group file
-- **Seed scales**: Initialize from existing scales (Scala .scl format supported)
+- **Sub-scale groups**: Optimize a large scale that decomposes into playable sub-scales, using regular polytopes (dodecahedron, 24-cell, ...), cyclic windows, or a custom group file, with separate metrics for the sub-scales and the whole scale if wanted
+- **Seed scales**: Initialize from existing scales (Scala .scl format supported), combine several sources, export a ranked seed file, and save results for later use
 - **Multi-run cross-seeding**: Best scales from each run seed the next for better exploration
 - **Multiple output formats**: Human-readable (default), quiet mode, JSON for scripting
 - **Reproducibility**: Optional random seed for deterministic results
@@ -553,6 +553,23 @@ Format:
 [Seeding from the Scala archive](#seeding-from-the-scala-archive)). Only the
 first item on a line is read, so a line may carry a comment after the pitch.
 
+A line starting with `#` also names the scale that follows. When a scale has
+a `#` name, `!` lines before its pitches are ignored, which the files written
+by `--export-seeds` and `--save-result` use for details:
+
+```
+# Ptolemy intense diatonic
+! 7 notes, quality 0.9978, from seeds.txt
+9/8           203.9
+5/4           386.3
+...
+```
+
+`--seeds` may be given several times, mixing seed files and archives; the
+sources are combined. Archives are selected from as described above, each on
+its own, and the seed limit below applies to the combined set. `--compare` and
+`--analyze` read all sources too.
+
 Seeds are adapted to the search rather than used as they are:
 
 - Scales outside the note range are trimmed or extended, both with `--notes`
@@ -569,6 +586,64 @@ whole population. Without a limit, a 200-scale seed file used to produce about
 held no random scales at all.
 
 The file `seeds.txt` provides over 200 scales for up to 31 notes.
+
+### Exporting a combined seed file
+
+`--export-seeds FILE` merges every `--seeds` source into one ranked seed file
+instead of searching:
+
+```bash
+python scale_search.py --seeds seeds.txt --seeds ~/scala/scl \
+    --min-notes 5 --max-notes 7 --metric tenney --top 20 \
+    --export-seeds seeds-5to7-tenney.txt
+```
+
+What happens to the scales:
+
+- **Filter.** Without a note count, scales of every size are exported. With
+  `--notes`, `--min-notes`, `--max-notes` (either alone sets one bound) or
+  `--groups` (its slot count), only those sizes are kept; unlike seeding,
+  there is no band of near misses. The scale must also contain every
+  `--include` note and no `--exclude` note, the same filter as `--compare`.
+- **Snapping.** Archive scales are snapped to ratios under `--ratio-limit` as
+  for seeding, so the file holds what the search would actually start from.
+  When snapping moved a note by more than a tenth of a cent, the detail line
+  says by how much at most. Scales from seed files are copied as written.
+  Large scales often cannot be snapped, because two of their notes would land
+  on the same ratio; they are counted as not expressible, and a higher
+  `--ratio-limit` keeps more of them.
+- **Ranking.** Each scale is scored on its own with `--metric`, `--octaves` and
+  `--combine`. With `--groups` too, scales are scored as flat scales, as when
+  an archive is used for seeding.
+- **Modes.** Of a scale and its modes (the same scale started from another
+  degree) only the best-scoring one is kept, and exact duplicates only once.
+  The search adds rotations of every seed itself.
+- **Top N.** `--top N` keeps the best N scales of each note count. Without
+  it, all scales that pass the filter are written.
+
+The file lists scales by note count, best first. A header records the
+sources, the ranking settings and how many scales of each size were kept.
+Archive scales are named `file.scl: description`. The output file may not be
+one of the `--seeds` sources.
+
+On a 4500-file test archive plus a small seed file, the export above took about
+a second.
+
+### Saving results
+
+`--save-result FILE` appends the best scale of a search to FILE in the same
+format, with the date, note count or group structure and quality as its name,
+and the full command line on a detail line. The file is created if needed.
+Results collect there and can be compared with `--seeds FILE --compare` or
+used as seeds later. Rename the `#` line by hand to give a result a name of its
+own.
+
+Grouped results are written in slot order (slot 1 first; slot 0 is the tonic
+1/1 and is not listed), because that order decides which notes form which
+sub-scales. With `--groups`, a seed file is read in its own order rather than
+sorted by pitch, so a saved result seeds exactly the same assignment. As a
+check, re-seeding a saved icosahedron result with `--generations 0`
+reproduced its quality exactly.
 
 ## Output
 

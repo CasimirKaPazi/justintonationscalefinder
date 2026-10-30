@@ -12,7 +12,7 @@ same object as a scale built from the other.
 
 import math
 from fractions import Fraction
-from typing import List, Tuple, Optional
+from typing import List, Optional, Tuple
 
 __all__ = [
     'scale_cents', 'compare_scales', 'nearest_scales', 'edo_fits',
@@ -54,7 +54,16 @@ def compare_scales(a: List[float], b: List[float],
     Equal note counts are paired degree by degree. Unequal counts are scored by
     coverage instead: how many of a's notes land within tolerance of some note
     of b. Returns None if nothing matches at all.
+
+    'relation' says which way any containment runs: 'same' for equal sizes,
+    'within' when every note of a lies in the larger b, 'contains' when every
+    note of the smaller b lies in a, and 'partial' otherwise.
     """
+    def circ(x, y):
+        """Signed distance from y to x, the short way round the octave."""
+        d = x - y
+        return d - 1200.0 * round(d / 1200.0)
+
     best = None
 
     for degree, rot in _rotations(b):
@@ -63,20 +72,23 @@ def compare_scales(a: List[float], b: List[float],
             max_dev = max(abs(d) for d in devs)
             rms = math.sqrt(sum(d * d for d in devs) / len(devs))
             matched, total = len(a), len(a)
+            relation = 'same'
         else:
-            devs = []
-            for x in a:
-                nearest = min(rot, key=lambda y: min(abs(x - y), 1200 - abs(x - y)))
-                d = x - nearest
-                if abs(d) > 600:
-                    d -= 1200 * (1 if d > 0 else -1)
-                devs.append(d)
+            devs = [min((circ(x, y) for y in rot), key=abs) for x in a]
             within = [d for d in devs if abs(d) <= tolerance]
             if not within:
                 continue
             matched, total = len(within), len(a)
             max_dev = max(abs(d) for d in within)
             rms = math.sqrt(sum(d * d for d in within) / len(within))
+            b_covered = sum(1 for y in rot
+                            if any(abs(circ(x, y)) <= tolerance for x in a))
+            if len(a) < len(rot) and matched == len(a):
+                relation = 'within'
+            elif len(a) > len(rot) and b_covered == len(rot):
+                relation = 'contains'
+            else:
+                relation = 'partial'
 
         cand = {
             'mode': degree,
@@ -84,6 +96,7 @@ def compare_scales(a: List[float], b: List[float],
             'rms': rms,
             'matched': matched,
             'total': total,
+            'relation': relation,
             'same_length': len(a) == len(rot),
             # Identical only if it is the same scale, not merely contained
             # in a larger one: 7 notes all landing inside a 12-note scale is

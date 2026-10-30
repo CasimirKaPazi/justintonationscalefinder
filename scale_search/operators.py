@@ -12,7 +12,7 @@ __all__ = [
     'SIMPLE_INTERVALS', 'COMMAS',
     'mutate', 'crossover', 'create_random_scale',
     'scale_invert', 'scale_rotate',
-    'crossover_slotwise', 'repair_slots',
+    'crossover_slotwise', 'repair_slots', 'weighted_sample',
 ]
 
 SIMPLE_INTERVALS = [
@@ -43,6 +43,34 @@ COMMAS = [
     Fraction(225, 224), # Septimal kleisma (7.7 cents) - very small
     Fraction(126, 125), # Septimal semicomma (13.8 cents)
 ]
+
+
+def weighted_sample(items: List, weights: List[float], k: int) -> List:
+    """
+    Draw k distinct items without replacement, each draw proportional to weight.
+
+    Shared by random scale creation, seed extension and slot repair, which
+    each used to carry their own copy of this loop.
+    """
+    items = list(items)
+    weights = list(weights)
+    picked = []
+    for _ in range(min(k, len(items))):
+        total = sum(weights)
+        if total <= 0:
+            idx = random.randrange(len(items))
+        else:
+            r = random.random() * total
+            cumsum = 0.0
+            idx = len(items) - 1  # Guards against float rounding at the top end
+            for i, w in enumerate(weights):
+                cumsum += w
+                if r <= cumsum:
+                    idx = i
+                    break
+        picked.append(items.pop(idx))
+        weights.pop(idx)
+    return picked
 
 
 def mutate_transpose(note: Fraction, limit: int) -> Fraction:
@@ -86,7 +114,7 @@ def mutate_combine(note1: Fraction, note2: Fraction, limit: int) -> Fraction:
 def mutate_stack(scale: List[Fraction], limit: int) -> Fraction:
     """
     La Monte Young style: stack intervals to create complex ratios.
-    E.g., 7/4 Ã— 7/4 Ã— 3/2 Ã— 3/2 Ã— 3/2 = 1323/1024
+    E.g., 7/4 × 7/4 × 3/2 × 3/2 × 3/2 = 1323/1024
     """
     # Choose 2-5 intervals to stack (from scale or simple intervals)
     num_stacks = random.randint(2, 5)
@@ -140,21 +168,14 @@ def scale_invert(scale: List[Fraction], limit: int = None) -> List[Fraction]:
     """
     inverted = []
     for r in scale:
-        inv = Fraction(2, 1) / r  # 2/r
-        # Reduce to octave (should already be, but be safe)
-        while inv >= 2:
-            inv = inv / 2
-        while inv < 1:
-            inv = inv * 2
-        
-        # Skip 1/1 and 2/1 - these are implicit, not scale degrees
-        if inv == Fraction(1, 1) or inv == Fraction(2, 1):
+        inv = reduce_to_octave(Fraction(2, 1) / r)
+        # Skip 1/1 - it is implicit, not a scale degree
+        if inv == 1:
             continue
-        
-        if limit is None or (inv.numerator <= limit and inv.denominator <= limit):
+        if limit is None or is_valid_ratio(inv, limit):
             inverted.append(inv)
     
-    return sorted(inverted, key=lambda r: float(r))
+    return sorted(inverted)
 
 
 def scale_rotate(scale: List[Fraction], pivot_idx: int = None, limit: int = None) -> List[Fraction]:
@@ -187,39 +208,18 @@ def scale_rotate(scale: List[Fraction], pivot_idx: int = None, limit: int = None
     # The pivot itself becomes 1/1 (implicit, not included)
     # The original 1/1 becomes a note relative to pivot
     
-    rotated = []
-    
-    # Original 1/1 relative to pivot = 1/pivot (then octave reduce)
-    inv_pivot = Fraction(1, 1) / pivot
-    while inv_pivot < 1:
-        inv_pivot = inv_pivot * 2
-    while inv_pivot >= 2:
-        inv_pivot = inv_pivot / 2
-    # Only add if not 1/1 or 2/1 and within limit
-    if inv_pivot != Fraction(1, 1) and inv_pivot != Fraction(2, 1):
-        if limit is None or (inv_pivot.numerator <= limit and inv_pivot.denominator <= limit):
-            rotated.append(inv_pivot)
-    
-    # Each other note relative to pivot
-    for i, note in enumerate(scale):
-        if i == pivot_idx:
-            continue  # This becomes 1/1, skip
-        
-        rel = note / pivot
-        # Reduce to octave
-        while rel >= 2:
-            rel = rel / 2
-        while rel < 1:
-            rel = rel * 2
-        
-        # Skip 1/1 and 2/1
-        if rel == Fraction(1, 1) or rel == Fraction(2, 1):
+    # The old tonic 1/1 and every other note, measured from the pivot; the
+    # pivot itself becomes the new (implicit) 1/1
+    others = [Fraction(1, 1)] + [n for i, n in enumerate(scale) if i != pivot_idx]
+    rotated = set()
+    for note in others:
+        rel = reduce_to_octave(note / pivot)
+        if rel == 1:
             continue
-        
-        if limit is None or (rel.numerator <= limit and rel.denominator <= limit):
-            rotated.append(rel)
+        if limit is None or is_valid_ratio(rel, limit):
+            rotated.add(rel)
     
-    return sorted(set(rotated), key=lambda r: float(r))
+    return sorted(rotated)
 
 def mutate(scale: List[Fraction], candidates: List[Fraction], config: SearchConfig) -> List[Fraction]:
     """
@@ -564,11 +564,22 @@ def repair_slots(genome: List[Fraction], target_len: int,
     while len(slots) < target_len:
         slots.append(None)
 
-    # Place any required notes that went missing into blank slots
+    # Place any required notes that went missing. Slot-wise crossover loses
+    # them routinely (each slot comes from one parent, and the parents may hold
+    # the note in different slots); if there are no blanks to put them in, a
+    # random non-required note is evicted instead of discarding the child.
     missing_required = [r for r in required if r not in seen]
     blanks = [i for i, s in enumerate(slots) if s is None]
     if len(missing_required) > len(blanks):
-        return None  # Can't fit required notes without evicting others
+        evictable = [i for i, s in enumerate(slots)
+                     if s is not None and s not in required]
+        shortfall = len(missing_required) - len(blanks)
+        if len(evictable) < shortfall:
+            return None
+        for i in random.sample(evictable, shortfall):
+            seen.discard(slots[i])
+            slots[i] = None
+            blanks.append(i)
     for r in missing_required:
         idx = blanks.pop(random.randrange(len(blanks)))
         slots[idx] = r
@@ -581,27 +592,13 @@ def repair_slots(genome: List[Fraction], target_len: int,
             return None
         if weight_map:
             weights = [weight_map.get(c, 0.001) for c in available]
-            for idx in blanks:
-                total = sum(weights)
-                if total <= 0:
-                    pick = random.randrange(len(available))
-                else:
-                    r = random.random() * total
-                    cumsum = 0.0
-                    pick = len(available) - 1
-                    for k, w in enumerate(weights):
-                        cumsum += w
-                        if r <= cumsum:
-                            pick = k
-                            break
-                slots[idx] = available.pop(pick)
-                weights.pop(pick)
+            picks = weighted_sample(available, weights, len(blanks))
         else:
             picks = random.sample(available, len(blanks))
-            for idx, note in zip(blanks, picks):
-                slots[idx] = note
+        for idx, note in zip(blanks, picks):
+            slots[idx] = note
 
-    if getattr(config, 'ordered_slots', False):
+    if config.ordered_slots:
         slots.sort()
 
     return slots
@@ -693,29 +690,7 @@ def create_random_scale(candidates: List[Fraction], num_ratios: int,
     
     if available_weights and len(available_weights) == len(available_candidates):
         # Weighted sampling without replacement
-        available_idx = list(range(len(available_candidates)))
-        current_weights = list(available_weights)
-        
-        for _ in range(min(remaining, len(available_candidates))):
-            if not available_idx:
-                break
-            # Normalize weights
-            total = sum(current_weights)
-            if total <= 0:
-                idx_in_list = random.randrange(len(available_idx))
-            else:
-                r = random.random() * total
-                cumsum = 0
-                idx_in_list = 0
-                for i, w in enumerate(current_weights):
-                    cumsum += w
-                    if r <= cumsum:
-                        idx_in_list = i
-                        break
-            
-            selected.append(available_candidates[available_idx[idx_in_list]])
-            available_idx.pop(idx_in_list)
-            current_weights.pop(idx_in_list)
+        selected.extend(weighted_sample(available_candidates, available_weights, remaining))
     else:
         # Uniform sampling
         extras = random.sample(available_candidates, min(remaining, len(available_candidates)))

@@ -17,9 +17,13 @@ Structures available:
     cube          8 slots, 6 sub-scales of 4
     icosahedron  12 slots, 20 sub-scales of 3
     dodecahedron 20 slots, 12 sub-scales of 5
+    16cell        8 slots, 16 sub-scales of 4
     24cell       24 slots, 24 sub-scales of 6
+    <polytope>:<ranks>  other ranks of the face lattice, e.g. 24cell:faces,
+                        16cell:cells+faces (ranks: cells, faces, edges)
     cyclic:N,k[,step]  N slots, sub-scales of k consecutive slots (wrapping)
-    <filename>   one sub-scale per line, slot indices, '#' for comments
+    <filename>   one sub-scale per line, slot indices, '#' for comments.
+                 A line given twice counts twice, which weights that sub-scale.
 
 Slot numbering is an arbitrary but fixed labelling of the vertices. Slot 0
 always holds the tonic 1/1.
@@ -494,15 +498,16 @@ def _make_cyclic(spec: str) -> GroupStructure:
     try:
         nums = [int(p) for p in parts]
     except ValueError:
-        raise ValueError(f"cyclic structure parameters must be integers, got '{body}'")
+        raise ValueError(f"cyclic structure parameters must be integers, got '{body}'") from None
 
     num_slots, size = nums[0], nums[1]
     step = nums[2] if len(nums) > 2 else 1
 
     if num_slots < 2:
         raise ValueError(f"cyclic: need at least 2 slots, got {num_slots}")
-    if not (1 <= size <= num_slots):
-        raise ValueError(f"cyclic: sub-scale size {size} must be between 1 and {num_slots}")
+    if not (2 <= size <= num_slots):
+        # A 1-slot window is a single note, which has no intervals to score
+        raise ValueError(f"cyclic: sub-scale size {size} must be between 2 and {num_slots}")
     if step < 1:
         raise ValueError(f"cyclic: step must be at least 1, got {step}")
 
@@ -528,7 +533,7 @@ def _load_group_file(path: str) -> GroupStructure:
     Slot count is inferred as (highest index + 1).
     """
     groups = []
-    with open(path, 'r') as f:
+    with open(path, 'r', encoding='utf-8', errors='replace') as f:
         for lineno, line in enumerate(f, 1):
             line = line.split('#', 1)[0].strip()
             if not line:
@@ -538,7 +543,7 @@ def _load_group_file(path: str) -> GroupStructure:
                 indices = [int(t) for t in tokens]
             except ValueError:
                 raise ValueError(
-                    f"{path}:{lineno}: expected slot indices (integers), got '{line}'")
+                    f"{path}:{lineno}: expected slot indices (integers), got '{line}'") from None
             if len(indices) < 2:
                 raise ValueError(
                     f"{path}:{lineno}: sub-scale needs at least 2 slots, got {len(indices)}")
@@ -570,7 +575,9 @@ def parse_group_spec(spec: str) -> GroupStructure:
 
     key = spec.lower()
 
-    if key.startswith('cyclic'):
+    # Require the colon, so a group file named e.g. "cyclic_test.txt" is
+    # still read as a file
+    if key.startswith('cyclic:'):
         return _make_cyclic(key)
 
     # A polytope may carry a rank suffix: 'name:faces', 'name:cells+faces'.

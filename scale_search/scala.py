@@ -26,7 +26,6 @@ Format, per the Scala documentation:
 The final pitch is the repeat interval, usually 2/1.
 """
 
-import math
 import os
 from fractions import Fraction
 from typing import List, Optional, Tuple
@@ -124,10 +123,14 @@ def parse_scl(path: str) -> Optional[ScalaScale]:
         if p is not None:
             pitches.append(p)
 
-    if not pitches:
-        return None
     if declared is not None and len(pitches) > declared:
         pitches = pitches[:declared]
+    # The tonic is implicit in Scala files, but some list it anyway as 1/1 or
+    # 0.0. Kept, it would count as an extra note, and seeding would snap it to
+    # whatever comma-sized ratio lies nearest.
+    pitches = [p for p in pitches if p != 1]
+    if not pitches:
+        return None
 
     repeat = pitches[-1]
     ratios = pitches[:-1]

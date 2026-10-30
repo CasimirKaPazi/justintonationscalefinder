@@ -2,11 +2,10 @@
 
 import math
 from fractions import Fraction
-from typing import List, Tuple, Optional
+from typing import List, Optional, Tuple
 
 from scale_search.util import sanitize_scale, interval_between
 from scale_search.metrics import (
-    CONSONANCE_METRICS, SCALE_METRICS,
     combined_metric, get_normalization, format_metric_description,
 )
 from scale_search.evolution import evaluate_scale
@@ -15,26 +14,53 @@ __all__ = [
     'load_seed_scales', 'find_matching_seed',
     'format_scale', 'print_interval_matrix',
     'evaluate_named_scale', 'print_scale_details',
+    'metric_breakdown', 'parse_pitches',
 ]
+
+
+def _parse_seed_line(line: str) -> Optional[Fraction]:
+    """
+    One pitch from a seed-file line: the first token as n/d or n.
+
+    Only the first token is read, so a trailing comment ("9/8  major second")
+    no longer makes the line silently disappear. Cents (a decimal point) are
+    skipped, since a seed is meant to be an exact ratio.
+    """
+    token = line.split()[0]
+    if '.' in token:
+        return None
+    try:
+        if '/' in token:
+            n, d = token.split('/')
+            ratio = Fraction(int(n), int(d))
+        else:
+            ratio = Fraction(int(token), 1)
+    except (ValueError, ZeroDivisionError):
+        return None
+    return ratio if ratio > 0 else None
+
 
 def load_seed_scales(filepath: str, with_names: bool = False):
     """
     Load seed scales from a file. Supports both simple format and Scala .scl format.
-    
+
     Comment styles:
     - Lines starting with # are comments (can be used as scale names)
     - Lines starting with ! are comments (Scala format)
     - Blank lines separate scales (in simple format)
-    
+
     Ratio formats:
     - n/d (e.g., 9/8, 5/4, 3/2)
     - n (e.g., 2 means 2/1)
-    
+    - anything after the first token on a line is ignored
+
     Notes:
     - 2/1 (or just 2) at the end of a scale is removed (it's implicit)
     - Ratios outside the octave (like 3/1, 9/4) are reduced to the octave
     - Cents values (containing '.') are skipped
-    
+    - A file ending in .scl is read with the dedicated Scala parser, which
+      handles the count line, cents and the description properly
+
     Example simple format:
         # My favorite scale
         9/8
@@ -44,44 +70,34 @@ def load_seed_scales(filepath: str, with_names: bool = False):
         5/3
         15/8
         2/1
-        
+
         # Another scale
         8/7
         6/5
         4/3
         3/2
-    
-    Example Scala .scl format:
-        ! scale_name.scl
-        Description of the scale
-        12
-        !
-        10/9
-        8/7
-        6/5
-        5/4
-        4/3
-        3/2
-        25/16
-        8/5
-        5/3
-        7/4
-        9/5
-        2
-    
+
     Args:
         filepath: Path to seed file
         with_names: If True, return (scales, names) tuple
-    
+
     Returns:
         If with_names=False: List of scales (each scale is a list of Fractions)
         If with_names=True: Tuple of (scales, names) where names[i] is name for scales[i] or None
     """
+    if filepath.lower().endswith('.scl'):
+        # Imported here: scala.py imports this module for its own seed-file case
+        from scale_search.scala import parse_scl
+        s = parse_scl(filepath)
+        scales = [sanitize_scale(s.ratios)] if s and s.ratios else []
+        names = [s.name] if scales else []
+        return (scales, names) if with_names else scales
+
     scales = []
     names = []
     current_scale = []
     current_name = None
-    
+
     def flush_scale():
         """Save current_scale if non-empty, reset state."""
         nonlocal current_scale, current_name
@@ -95,23 +111,23 @@ def load_seed_scales(filepath: str, with_names: bool = False):
                     names.append(current_name)
         current_scale = []
         current_name = None
-    
+
     try:
-        with open(filepath, 'r') as f:
+        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
             for line in f:
                 line = line.strip()
-                
+
                 if not line:
                     # Blank line = delimiter: flush scale and reset name
                     flush_scale()
                     continue
-                
+
                 if line.startswith('#'):
                     # # comment: also acts as delimiter (backward compat), then sets name
                     flush_scale()
                     current_name = line[1:].strip() or None
                     continue
-                
+
                 if line.startswith('!'):
                     # ! comment (Scala style): first non-empty one becomes the name
                     # If mid-scale, skip (e.g. the "!" separator line in .scl format)
@@ -123,112 +139,108 @@ def load_seed_scales(filepath: str, with_names: bool = False):
                             comment_text = comment_text[:-4]
                         current_name = comment_text
                     continue
-                
-                # Skip cents values (contain decimal point)
-                if '.' in line:
+
+                ratio = _parse_seed_line(line)
+                if ratio is None:
                     continue
-                
-                # Try to parse as ratio
-                try:
-                    if '/' in line:
-                        # Fraction format: n/d
-                        parts = line.split('/')
-                        if len(parts) == 2:
-                            n = int(parts[0].strip())
-                            d = int(parts[1].strip())
-                            ratio = Fraction(n, d)
-                            if ratio > 1:
-                                # Reduce to octave (1 < r < 2)
-                                while ratio >= 2:
-                                    ratio = ratio / 2
-                                if ratio > 1:  # Skip if it reduced to exactly 1
-                                    current_scale.append(ratio)
-                    else:
-                        # Could be integer like "2" meaning 2/1
-                        val = int(line)
-                        if val >= 2 and (current_scale or val <= 4):
-                            ratio = Fraction(val, 1)
-                            while ratio >= 2:
-                                ratio = ratio / 2
-                            if ratio > 1:
-                                current_scale.append(ratio)
-                except (ValueError, ZeroDivisionError):
-                    pass
-            
+                bare_integer = '/' not in line.split()[0]
+                if bare_integer and not current_scale and ratio > 4:
+                    # A bare integer above 4 opening a block is the note-count
+                    # line of an embedded .scl block, not a pitch. (2, 3 and 4
+                    # are ambiguous and, as always, are read as pitches.)
+                    continue
+                if ratio > 1:
+                    current_scale.append(ratio)  # Octave-reduced in flush_scale
+
             # Don't forget the last scale
             flush_scale()
-    
+
     except FileNotFoundError:
         print(f"Warning: Seed file '{filepath}' not found.")
-        if with_names:
-            return [], []
-        return []
-    except Exception as e:
+        return ([], []) if with_names else []
+    except OSError as e:
         print(f"Warning: Error reading seed file '{filepath}': {e}")
-        if with_names:
-            return [], []
-        return []
-    
+        return ([], []) if with_names else []
+
     if with_names:
         return scales, names
     return scales
 
 
-def find_matching_seed(scale: List[Fraction], seed_scales: List[List[Fraction]], 
+def find_matching_seed(scale: List[Fraction], seed_scales: List[List[Fraction]],
                        seed_names: List[str] = None) -> Tuple[int, str]:
     """
     Check if a scale matches any seed scale.
-    
+
     Args:
         scale: The scale to check
         seed_scales: List of seed scales
         seed_names: Optional list of names corresponding to seed_scales
-    
+
     Returns:
         (index, name) if match found, (-1, None) otherwise
     """
     scale_set = frozenset((r.numerator, r.denominator) for r in scale)
-    
+
     for i, seed in enumerate(seed_scales):
         seed_set = frozenset((r.numerator, r.denominator) for r in seed)
         if scale_set == seed_set:
             name = seed_names[i] if seed_names and i < len(seed_names) else None
             return i, name
-    
+
     return -1, None
+
+
+def parse_pitches(text: str) -> List[Fraction]:
+    """
+    Parse a comma-separated list of pitches given as ratios or cents.
+
+    Used for --compare, where checking a scale written in cents (an equal
+    temperament, a measured tuning) is as reasonable as checking one written
+    in ratios. Cents become the ratio they denote, to well under a thousandth
+    of a cent. Raises ValueError naming the entry it cannot read.
+    """
+    from scale_search.scala import _parse_pitch  # Same rules as .scl files
+    out = []
+    for part in text.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        p = _parse_pitch(part)
+        if p is None:
+            raise ValueError(f"'{part}' is not a ratio (n/d or n) or a cents value")
+        out.append(p)
+    return out
 
 
 def format_scale(scale: List[Fraction], verbose: bool = False) -> str:
     """Format a scale for display."""
-    # Sanitize first to ensure valid output
-    scale = sanitize_scale(scale)
-    
     lines = []
-    for r in sorted(scale):
+    for r in sanitize_scale(scale):
         if verbose:
             cents = 1200 * math.log2(float(r))
             lines.append(f"{r.numerator}/{r.denominator}  ({cents:.1f} cents)")
         else:
             lines.append(f"{r.numerator}/{r.denominator}")
-    if verbose:
-        lines.append(f"2/1  (1200.0 cents)")
-    else:
-        lines.append("2/1")
+    lines.append("2/1  (1200.0 cents)" if verbose else "2/1")
     return "\n".join(lines)
 
 
 def print_interval_matrix(scale: List[Fraction], metrics: List[Tuple[str, float]] = None):
-    """Print the interval matrix for a scale."""
+    """
+    Print the interval matrix for a scale: the combined penalty of each
+    interval, 0 = most consonant, as the search scores it.
+    """
     if metrics is None:
-        metrics = [('tenney', 1.0)]
-    
-    full_scale = [Fraction(1, 1)] + sorted(scale) + [Fraction(2, 1)]
-    
+        metrics = [('barlow', 1.0)]
+
+    full_scale = [Fraction(1, 1)] + sanitize_scale(scale) + [Fraction(2, 1)]
+
     # Header
     header = "        " + "  ".join(f"{r.numerator:>3}/{r.denominator:<3}" for r in full_scale)
     print(header)
     print("-" * len(header))
-    
+
     for i, r1 in enumerate(full_scale):
         row = f"{r1.numerator:>3}/{r1.denominator:<3} |"
         for j, r2 in enumerate(full_scale):
@@ -241,25 +253,50 @@ def print_interval_matrix(scale: List[Fraction], metrics: List[Tuple[str, float]
         print(row)
 
 
-def evaluate_named_scale(scale_name: str, ratios: List[str], metrics: List[Tuple[str, float]] = None,
+def metric_breakdown(details: dict, metrics: List[Tuple[str, float]],
+                     scale_metrics: List[Tuple[str, float]],
+                     edo: int = 0) -> List[Tuple[str, float, float]]:
+    """
+    Per-metric quality (0-1, higher = better) for display, as
+    (label, quality, weight) triples.
+
+    Interval metrics are shown by their average over all intervals, min-max
+    normalized; scale metrics by their value for the whole scale. The quality
+    shown is the metric's own, whatever the sign of its weight — a negatively
+    weighted metric is one the search was asked to make worse.
+    """
+    rows = []
+    for name, weight in metrics + scale_metrics:
+        raw = details['metric_averages'].get(name, 0)
+        lo, hi = get_normalization(name)
+        norm = max(0.0, min(1.0, (raw - lo) / (hi - lo))) if hi > lo else 0.0
+        quality = norm if name in ('primes', 'variety') else 1.0 - norm
+        label = f"edo{edo}" if name == 'edo' else name
+        rows.append((label, quality, weight))
+    return rows
+
+
+def evaluate_named_scale(scale_name: str, ratios: List, metrics: List[Tuple[str, float]] = None,
                          octave_range: int = 1, scale_metrics: List[Tuple[str, float]] = None,
                          edo: int = 0, combine_method: str = 'geometric') -> Tuple[float, dict, List]:
-    """Evaluate a specific scale given as string ratios and return results.
-    
+    """Evaluate a specific scale given as ratios (Fractions or strings).
+
     Note: call init_normalization(ratio_limit) before using this function
     to ensure metric normalization ranges are set for the relevant ratio limit.
-    
+
     Returns:
-        (quality, details, scale) where scale is a list of Fractions.
+        (quality, details, scale) where scale is a sorted list of Fractions
+        with 1/1 and 2/1 removed.
     """
     if metrics is None:
-        metrics = [('tenney', 1.0)]
+        metrics = [('barlow', 1.0)]
     if scale_metrics is None:
         scale_metrics = []
-    
-    scale = [Fraction(r) for r in ratios if r != "2/1"]
+
+    # sanitize_scale drops 2/1 however it is written ("2/1", "2", " 2/1 ")
+    scale = sanitize_scale([Fraction(r) for r in ratios])
     fitness, details = evaluate_scale(scale, metrics, octave_range, None, scale_metrics, edo, combine_method)
-    
+
     return fitness, details, scale
 
 
@@ -269,44 +306,32 @@ def print_scale_details(scale_name: str, scale: List[Fraction], details: dict,
                         edo: int = 0):
     """Print detailed evaluation of a scale."""
     if metrics is None:
-        metrics = [('tenney', 1.0)]
+        metrics = [('barlow', 1.0)]
     if scale_metrics is None:
         scale_metrics = []
-    
+
     # Build metric description
     metric_desc = format_metric_description(metrics, scale_metrics, edo)
     octave_range = details.get('octave_range', 1)
-    
+
     print(f"\n{'=' * 60}")
     print(f"Scale: {scale_name}")
     print("=" * 60)
     print()
-    print(format_scale(scale))
-    print()
-    print("--- Details ---")
     print(format_scale(scale, verbose=True))
     print()
     print(f"Metric: {metric_desc}")
     print(f"Octaves evaluated: {2 * octave_range + 1}")
     print(f"Total intervals: {details['num_intervals']}")
     print(f"Quality (0-1, higher=better): {details['quality']:.4f}")
-    
+
     # Show EDO deviation if applicable
     if edo > 0 and 'edo_deviation' in details['metric_averages']:
         avg_dev = details['metric_averages']['edo_deviation']
         print(f"Average EDO deviation: {avg_dev:.1f} cents (from {edo}-EDO)")
-    
-    # Show individual metric scores
+
+    # Same breakdown as after a search, so the numbers can be compared
     if len(metrics) > 1 or scale_metrics:
-        print("\nIndividual metric averages:")
-        for metric_name, weight in metrics:
-            avg = details['metric_averages'].get(metric_name, 0)
-            print(f"  {metric_name}: {avg:.4f} (weight: {weight})")
-        for metric_name, weight in scale_metrics:
-            avg = details['metric_averages'].get(metric_name, 0)
-            if metric_name == 'edo':
-                print(f"  edo{edo}: {avg:.4f} (weight: {weight})")
-            else:
-                print(f"  {metric_name}: {avg:.4f} (weight: {weight})")
-
-
+        print("\nMetric breakdown (0-1, higher=better):")
+        for label, quality, weight in metric_breakdown(details, metrics, scale_metrics, edo):
+            print(f"  {label}: {quality:.3f} (weight {weight})")

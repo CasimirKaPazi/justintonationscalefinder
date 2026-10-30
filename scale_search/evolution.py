@@ -5,26 +5,25 @@ import random
 import bisect
 import time
 from fractions import Fraction
-from typing import List, Set, Tuple
+from typing import Callable, List, Optional, Tuple
 
 from scale_search.config import SearchConfig, validate_combine_method
 from scale_search.util import generate_candidate_ratios, sanitize_scale, reduce_to_octave
+from scale_search.metrics import (
+    SCALE_METRICS,
+    cached_metric_nd, combined_metric, get_normalization, init_normalization,
+    edo_penalty, edo_deviation,
+    scale_fingerprint, fingerprint_distance, fingerprint_diversity_score,
+)
+from scale_search.operators import (
+    mutate, crossover, create_random_scale,
+    scale_invert, scale_rotate, repair_slots, weighted_sample,
+)
 
 __all__ = [
     'evaluate_scale', 'evolve', 'combine_penalties',
     'evaluate_grouped_scale', 'subscale_of', 'slots_to_pitches',
 ]
-from scale_search.metrics import (
-    CONSONANCE_METRICS, SCALE_METRICS,
-    cached_metric, combined_metric, get_normalization, init_normalization,
-    edo_penalty, edo_deviation,
-    scale_fingerprint, fingerprint_distance, fingerprint_diversity_score,
-    format_metric_description,
-)
-from scale_search.operators import (
-    mutate, crossover, create_random_scale,
-    scale_invert, scale_rotate, repair_slots,
-)
 
 def combine_penalties(penalties: List[float], combine_method: str = 'geometric') -> float:
     """
@@ -78,31 +77,31 @@ def combine_penalties(penalties: List[float], combine_method: str = 'geometric')
     
     if combine_method == 'mean':
         return sum(penalties) / len(penalties)
-    
+
     # No silent fallback: an unrecognized name means the caller asked for
-    # something they aren't getting.
-    raise ValueError(validate_combine_method.__doc__ and
-                     f"Unknown combine method '{combine_method}'")
+    # something they aren't getting. validate_combine_method raises with a
+    # did-you-mean hint; it only returns for names handled above.
+    validate_combine_method(combine_method)
+    raise ValueError(f"Unknown combine method '{combine_method}'")
 
 
-def evaluate_scale(scale: List[Fraction], 
+def evaluate_scale(scale: List[Fraction],
                    metrics: List[Tuple[str, float]] = None,
                    octave_range: int = 1,
                    interval_cache: dict = None,
                    scale_metrics: List[Tuple[str, float]] = None,
                    edo: int = 0,
-                   combine_method: str = 'geometric',
-                   metric_value_cache: dict = None) -> Tuple[float, dict]:
+                   combine_method: str = 'geometric') -> Tuple[float, dict]:
     """
     Evaluate a scale's quality using the specified metric(s).
     Returns (fitness, details) where higher fitness = better scale.
-    
+
     Args:
         metrics: List of (metric_name, weight) tuples for interval evaluation
         scale_metrics: List of (metric_name, weight) tuples for whole-scale properties
         octave_range: How many octaves above/below to consider
-        interval_cache: Optional {(n,d): combined_score} for fast interval lookup
-        metric_value_cache: Optional {(n,d,metric_name): raw_value} for individual metrics
+        interval_cache: Optional {(n,d): combined_score} for fast interval lookup.
+            Only valid for one set of metrics; use a fresh dict per search.
         edo: If > 0, penalize notes far from this EDO's steps (for neji scales)
         combine_method: How to combine interval scores:
             'geometric' - geometric mean (default): one bad interval pulls down score
@@ -113,11 +112,14 @@ def evaluate_scale(scale: List[Fraction],
     
     All metrics are converted to quality scores (0-1, higher = better).
     Final score combines interval quality with scale metrics via weighted geometric mean.
+    A negative weight inverts a metric (quality q counts as 1 - q, weight |w|),
+    which keeps the result inside [0, 1].
     """
     if metrics is None:
-        metrics = [('tenney', 1.0)]
+        metrics = [('barlow', 1.0)]
     if scale_metrics is None:
         scale_metrics = []
+    metric_names = [name for name, _ in metrics]
     
     # Build full scale across octaves
     base_scale = [Fraction(1, 1)] + sorted(scale) + [Fraction(2, 1)]
@@ -159,35 +161,23 @@ def evaluate_scale(scale: List[Fraction],
             g = math.gcd(int_n, int_d)
             int_n, int_d = int_n // g, int_d // g
             
-            key = (int_n, int_d)
-            
-            # Use cache if available, otherwise compute and cache
+            # Combined score: from the per-search cache if given, else computed
+            score = None
             if interval_cache is not None:
-                if key in interval_cache:
-                    score = interval_cache[key]
-                    interval_scores.append(score)
-                    if metric_value_cache is not None:
-                        for name, _ in metrics:
-                            mv_key = (int_n, int_d, name)
-                            if mv_key in metric_value_cache:
-                                individual_scores[name].append(metric_value_cache[mv_key])
-                else:
-                    # Compute and cache
-                    interval = Fraction(int_n, int_d)
-                    score = combined_metric(interval, metrics, normalize=True)
-                    interval_cache[key] = score
-                    interval_scores.append(score)
-                    for name, _ in metrics:
-                        val = cached_metric(interval, name)
-                        if metric_value_cache is not None:
-                            metric_value_cache[(int_n, int_d, name)] = val
-                        individual_scores[name].append(val)
-            else:
-                interval = Fraction(int_n, int_d)
-                score = combined_metric(interval, metrics, normalize=True)
-                interval_scores.append(score)
-                for name, _ in metrics:
-                    individual_scores[name].append(cached_metric(interval, name))
+                score = interval_cache.get((int_n, int_d))
+            if score is None:
+                score = combined_metric(Fraction(int_n, int_d), metrics, normalize=True)
+                if interval_cache is not None:
+                    interval_cache[(int_n, int_d)] = score
+            interval_scores.append(score)
+
+            # Raw per-metric values, for the breakdown and the fingerprint.
+            # These come from the module-level metric cache, so every interval
+            # is recorded whether or not its combined score was cached. (A
+            # second cache used to sit here and silently dropped values for
+            # cached intervals whenever it wasn't passed in.)
+            for name in metric_names:
+                individual_scores[name].append(cached_metric_nd(int_n, int_d, name))
     
     raw_interval_penalty = combine_penalties(interval_scores, combine_method)
     
@@ -218,8 +208,10 @@ def evaluate_scale(scale: List[Fraction],
     scale_metric_scores = {}
     scale_metric_scores['num_notes'] = num_notes
     
-    # Interval quality as first component
-    interval_weight = sum(w for _, w in metrics)
+    # Interval quality as first component. Its weight is the total magnitude
+    # of the interval metrics' weights; their signs were already applied per
+    # interval in combined_metric.
+    interval_weight = sum(abs(w) for _, w in metrics)
     quality_scores.append((interval_quality, interval_weight))
     
     for metric_name, weight in scale_metrics:
@@ -244,9 +236,16 @@ def evaluate_scale(scale: List[Fraction],
             quality = norm_score  # Already: higher = higher quality
         else:
             quality = 1.0 - norm_score  # Invert penalties
-        
+
+        # Negative weight: reward the opposite. A signed weight in the
+        # geometric mean would instead divide by the quality, which pushed
+        # scores above 1 (variety:-0.5) or, when weights summed to zero
+        # (variety:-1), dropped the metric altogether.
+        if weight < 0:
+            quality = 1.0 - quality
+
         quality = max(0.001, quality)  # Avoid zero for geometric mean
-        quality_scores.append((quality, weight))
+        quality_scores.append((quality, abs(weight)))
     
     # Combine using weighted geometric mean
     # Formula: product(q_i ^ w_i) ^ (1 / sum(w_i))
@@ -314,7 +313,6 @@ def evaluate_grouped_scale(genome: List[Fraction],
                            scale_metrics: List[Tuple[str, float]] = None,
                            edo: int = 0,
                            combine_method: str = 'geometric',
-                           metric_value_cache: dict = None,
                            global_weight: float = 0.3) -> Tuple[float, dict]:
     """
     Evaluate a slot-order genome by the quality of its sub-scales.
@@ -344,7 +342,7 @@ def evaluate_grouped_scale(genome: List[Fraction],
             continue
         _, sub_details = evaluate_scale(
             sub, metrics, octave_range, interval_cache,
-            scale_metrics, edo, combine_method, metric_value_cache)
+            scale_metrics, edo, combine_method)
         q = sub_details['quality']
         local_penalties.append(1.0 - q)
         group_details.append({
@@ -359,9 +357,9 @@ def evaluate_grouped_scale(genome: List[Fraction],
     
     # Whole-scale quality, for the global blend and for reporting
     all_notes = sanitize_scale(genome)
-    global_fitness, global_details = evaluate_scale(
+    _, global_details = evaluate_scale(
         all_notes, metrics, octave_range, interval_cache,
-        scale_metrics, edo, combine_method, metric_value_cache)
+        scale_metrics, edo, combine_method)
     global_quality = max(0.001, global_details['quality'])
     
     if global_weight <= 0.0:
@@ -389,36 +387,44 @@ def evaluate_grouped_scale(genome: List[Fraction],
     return final_quality, details
 
 
-def local_search(scale: List[Fraction], candidates: List[Fraction], 
+def local_search(scale: List[Fraction], candidates: List[Fraction],
                  eval_fn, config: SearchConfig, max_iterations: int = 10,
-                 candidate_cents: List[Tuple[float, int]] = None) -> Tuple[List[Fraction], float]:
+                 candidate_cents: List[Tuple[float, int]] = None,
+                 normalize: Optional[Callable] = None) -> Tuple[List[Fraction], float]:
     """
     Hill-climbing local search: try small improvements to a scale.
     Returns improved scale and its fitness.
-    
+
     Args:
         candidate_cents: Optional pre-computed list of (cents, index) sorted by cents
                         for O(log n) neighbor lookups instead of O(n)
-    
+        normalize: Optional function applied to every trial scale before it is
+                   scored, returning the scale to use or None to reject it.
+                   Grouped search passes its slot repair here, which re-sorts
+                   under --ordered-slots — without it, replacing a note with a
+                   neighbour up to 100 cents away could leave slots out of
+                   pitch order in the final result.
+
     Tries:
     1. Swapping each note with nearby candidates
     2. Single-note mutations
-    
+
     Respects required_notes (won't modify) and excluded_notes (won't add).
     """
     required = set(config.required_notes) if config.required_notes else set()
     excluded = config.excluded_notes
-    
+    if normalize is None:
+        normalize = lambda s: s  # noqa: E731
+
     current = scale.copy()
     current_fitness = eval_fn(current)
     scale_set = set(current)
-    
-    # Indices of notes that can be modified
-    mutable_indices = [i for i, note in enumerate(current) if note not in required]
-    
+
     for _ in range(max_iterations):
         improved = False
-        
+        # Recomputed each round: normalizing can move notes between positions
+        mutable_indices = [i for i, note in enumerate(current) if note not in required]
+
         # Try swapping each mutable note with a similar one
         for i in mutable_indices:
             note = current[i]
@@ -440,21 +446,26 @@ def local_search(scale: List[Fraction], candidates: List[Fraction],
             for replacement in nearby[:5]:  # Try up to 5 nearby notes
                 test_scale = current.copy()
                 test_scale[i] = replacement
+                test_scale = normalize(test_scale)
+                if test_scale is None:
+                    continue
                 test_fitness = eval_fn(test_scale)
-                
+
                 if test_fitness > current_fitness:
                     current = test_scale
                     current_fitness = test_fitness
                     scale_set = set(current)
                     improved = True
                     break
-            
+
             if improved:
                 break
-        
+
         if not improved:
             # Try a single mutation (mutate already respects constraints)
-            mutated = mutate(current, candidates, config)
+            mutated = normalize(mutate(current, candidates, config))
+            if mutated is None:
+                break
             mutated_fitness = eval_fn(mutated)
             if mutated_fitness > current_fitness:
                 current = mutated
@@ -475,7 +486,8 @@ def tournament_select(population: List[Tuple[float, List[Fraction]]], k: int) ->
 
 def select_elites_diverse(population: List[Tuple[float, List[Fraction]]],
                           n_elites: int,
-                          get_fingerprint_fn) -> List[Tuple[float, List[Fraction]]]:
+                          get_fingerprint_fn,
+                          key_fn: Optional[Callable] = None) -> List[Tuple[float, List[Fraction]]]:
     """
     Select elite individuals with fingerprint-based diversity.
     
@@ -489,9 +501,14 @@ def select_elites_diverse(population: List[Tuple[float, List[Fraction]]],
         population: List of (fitness, scale) tuples
         n_elites: Number of elites to select
         get_fingerprint_fn: Function to get fingerprint for a scale
+        key_fn: Identity of a scale for de-duplication. Defaults to its pitch
+                set; grouped search passes an order-sensitive key, since two
+                slot assignments of the same pitches are different solutions.
     """
     if n_elites <= 0 or not population:
         return []
+    if key_fn is None:
+        key_fn = lambda s: frozenset((r.numerator, r.denominator) for r in s)  # noqa: E731
     
     # Sort by fitness
     sorted_pop = sorted(population, key=lambda x: x[0], reverse=True)
@@ -508,7 +525,7 @@ def select_elites_diverse(population: List[Tuple[float, List[Fraction]]],
         window_size = min(10 + 5 * k, len(sorted_pop))
         
         for i, ind in enumerate(sorted_pop[:window_size]):
-            scale_key = frozenset((r.numerator, r.denominator) for r in ind[1])
+            scale_key = key_fn(ind[1])
             if scale_key in seen_scales:
                 continue
             
@@ -538,8 +555,7 @@ def select_elites_diverse(population: List[Tuple[float, List[Fraction]]],
         
         if best_candidate:
             elites.append(best_candidate)
-            scale_key = frozenset((r.numerator, r.denominator) for r in best_candidate[1])
-            seen_scales.add(scale_key)
+            seen_scales.add(key_fn(best_candidate[1]))
             fp = get_fingerprint_fn(best_candidate[1])
             if fp:
                 elite_fingerprints.append(fp)
@@ -556,7 +572,10 @@ def evolve(config: SearchConfig, verbose: bool = True,
         config: SearchConfig with all parameters
         verbose: Print progress
         seed_scales: Optional list of seed scales to initialize population.
-                    If None, uses default seeds. If empty list [], uses no seeds.
+                    None or [] means no seeds (purely random initialization).
+    
+    Raises ValueError if the ratio limit offers too few candidate ratios to
+    build a scale of the requested size.
     """
     candidates, candidate_weights = generate_candidate_ratios(config.ratio_limit)
     
@@ -569,36 +588,43 @@ def evolve(config: SearchConfig, verbose: bool = True,
     edo = config.edo
     combine_method = config.combine_method
     
+    # Note constraints
+    required_notes = list(config.required_notes)
+    required_set = set(required_notes)
+    excluded_notes = config.excluded_notes
+    
+    # Fail early and clearly if a scale of the requested size cannot be built.
+    # Otherwise random scales come out silently short, which in grouped mode
+    # crashes on a missing slot and ungrouped quietly returns too few notes.
+    usable = len([c for c in candidates
+                  if c not in excluded_notes and c not in required_set])
+    needed = config.max_notes - 1 - len(required_notes)
+    if usable < needed:
+        raise ValueError(
+            f"Ratio limit {config.ratio_limit} gives only {usable} usable candidate "
+            f"ratios, but a {config.max_notes}-note scale needs {needed} besides "
+            f"the tonic and required notes. Raise --ratio-limit.")
+    
     # Pre-compute cents for all candidates (for fast neighbor lookups)
     # Store as list of (cents, index) sorted by cents
     candidate_cents = [(1200 * math.log2(float(c)), i) for i, c in enumerate(candidates)]
     candidate_cents.sort()  # Sort by cents value
     
     # Ratio -> weight lookup for O(1) access (used when extending short seed scales)
-    candidate_weight_map = {c: w for c, w in zip(candidates, candidate_weights)}
-    
-    # Build metric description string
-    metric_desc = format_metric_description(metrics, scale_metrics, edo)
-    
-    note_desc = f"exactly {config.fixed_notes}" if config.fixed_notes is not None else f"up to {config.max_notes}"
-    octave_desc = f"{2 * octave_range + 1} octaves" if octave_range > 0 else "1 octave"
-    
-    # Note constraints
-    required_notes = config.required_notes if config.required_notes else []
-    excluded_notes = config.excluded_notes
+    candidate_weight_map = dict(zip(candidates, candidate_weights))
     
     if verbose:
         print(f"Generated {len(candidates)} candidate ratios")
         if required_notes:
             print(f"Required notes: {', '.join(str(r) for r in required_notes)}")
         if excluded_notes:
-            print(f"Excluded notes: {', '.join(str(r) for r in excluded_notes)}")
+            print(f"Excluded notes: {', '.join(str(r) for r in sorted(excluded_notes))}")
         print()
     
-    # Lazy interval caches - compute on demand instead of precomputing all pairs
-    # This avoids O(n²) precomputation which becomes prohibitive for large ratio limits
-    interval_cache = {}       # (n, d) -> combined score
-    metric_value_cache = {}   # (n, d, metric_name) -> raw metric value
+    # Lazy interval cache: (n, d) -> combined score, computed on demand
+    # instead of precomputing all pairs, which becomes prohibitive for large
+    # ratio limits.
+    interval_cache = {}
     
     # Scale fitness cache. Ungrouped, a scale is a set of pitches and order
     # carries no information, so a frozenset key maximises hits. Grouped, two
@@ -608,6 +634,7 @@ def evolve(config: SearchConfig, verbose: bool = True,
     grouped = bool(config.groups)
     groups = config.groups
     global_weight = config.global_weight
+    genome_len = config.num_slots - 1 if grouped else None
     
     if grouped:
         def cache_key(scale):
@@ -626,10 +653,11 @@ def evolve(config: SearchConfig, verbose: bool = True,
             if grouped:
                 fitness, details = evaluate_grouped_scale(
                     scale, groups, metrics, octave_range, interval_cache,
-                    scale_metrics, edo, combine_method, metric_value_cache,
-                    global_weight)
+                    scale_metrics, edo, combine_method, global_weight)
             else:
-                fitness, details = evaluate_scale(scale, metrics, octave_range, interval_cache, scale_metrics, edo, combine_method, metric_value_cache)
+                fitness, details = evaluate_scale(
+                    scale, metrics, octave_range, interval_cache,
+                    scale_metrics, edo, combine_method)
             scale_cache[key] = fitness
             fingerprint_cache[key] = scale_fingerprint(details)
         return scale_cache[key]
@@ -641,6 +669,10 @@ def evolve(config: SearchConfig, verbose: bool = True,
             eval_scale_cached(scale)  # This will populate the cache
         return fingerprint_cache.get(key, ())
     
+    def repair(genome):
+        """Grouped mode: restore exact slot count (and pitch order if ordered)."""
+        return repair_slots(genome, genome_len, candidates, config, candidate_weight_map)
+    
     def fresh_random_scale():
         """
         A new random individual.
@@ -648,113 +680,108 @@ def evolve(config: SearchConfig, verbose: bool = True,
         create_random_scale returns required notes first, which ungrouped is
         harmless (the scale gets sorted) but grouped would pin every required
         note to the lowest slots and never explore other placements — so the
-        slot order is shuffled.
+        slot order is shuffled. Grouped individuals then go through the same
+        repair as everything else, which under --ordered-slots puts them in
+        pitch order; random individuals used to skip that and be scored with
+        slots out of order.
         """
         num_ratios = config.target_num_ratios()
         scale = create_random_scale(candidates, num_ratios, candidate_weights,
                                     required=required_notes, excluded=excluded_notes)
-        if grouped and not config.ordered_slots:
-            random.shuffle(scale)
+        if grouped:
+            if not config.ordered_slots:
+                random.shuffle(scale)
+            scale = repair(scale)
         return scale
     
-    # Use provided seeds (empty list means no seeds)
-    if seed_scales is None:
-        seed_scales = []
+    def resize_seed(scale):
+        """
+        Fit an ungrouped seed to the search: drop excluded notes, add missing
+        required ones, then trim or extend to a valid size.
+        
+        With a fixed note count the target is that count. With a range the
+        seed keeps its own size if it fits and is clamped to the nearest bound
+        if not — out-of-range seeds used to be discarded outright in that case,
+        although they were resized with --notes.
+        """
+        notes = [r for r in sanitize_scale(scale) if r not in excluded_notes]
+        present = set(notes)
+        notes += [r for r in required_notes if r not in present]
+        
+        if config.fixed_notes is not None:
+            target = config.fixed_notes - 1
+        else:
+            target = max(config.min_notes - 1, min(config.max_notes - 1, len(notes)))
+        
+        if len(notes) > target:
+            optional = [r for r in notes if r not in required_set]
+            notes = required_notes + random.sample(optional, target - len(required_notes))
+        elif len(notes) < target:
+            present = set(notes)
+            available = [c for c in candidates
+                         if c not in present and c not in excluded_notes]
+            weights = [candidate_weight_map.get(c, 0.001) for c in available]
+            notes += weighted_sample(available, weights, target - len(notes))
+        return sanitize_scale(notes) if notes else None
+    
+    def prepare_seed(scale):
+        """A seed made ready for the population, or None if unusable."""
+        if grouped:
+            # Slot-order genome: repair in place to the exact slot count rather
+            # than sorting, so notes keep the slots that decide their groups.
+            prepared = repair(scale)
+        else:
+            prepared = resize_seed(scale)
+        if prepared is None or not config.check_constraints(prepared):
+            return None
+        return prepared
     
     # Initialize population
     # Note: N notes = N-1 ratios (tonic 1/1 is implicit, octave 2/1 is repeat)
     population = []
     
-    def add_scale_if_valid(scale, target_len=None):
-        """Add scale to population if it meets size and constraint requirements.
-        
-        If scale is shorter than target, adds random notes from candidates.
-        If scale is longer than target, removes notes (keeping required ones).
-        """
-        if grouped:
-            # Slot-order genome: repair in place to the exact slot count rather
-            # than sorting, so notes keep the slots that decide their groups.
-            repaired = repair_slots(scale, config.num_slots - 1, candidates,
-                                    config, candidate_weight_map)
-            if repaired is None or not config.check_constraints(repaired):
-                return
-            fitness = eval_scale_cached(repaired)
-            population.append((fitness, repaired))
-            return
-        
-        # Sanitize: ensure all ratios are within octave, no duplicates
-        scale = sanitize_scale(scale)
-        
-        if not scale or not config.check_constraints(scale):
-            return
-        
-        if target_len is not None:
-            if len(scale) == target_len:
-                fitness = eval_scale_cached(scale)
-                population.append((fitness, list(scale)))
-            elif len(scale) > target_len:
-                # Remove notes to reach target length, but keep required notes
-                optional = [n for n in scale if n not in required_notes]
-                num_optional = target_len - len(required_notes)
-                if num_optional >= 0 and len(optional) >= num_optional:
-                    trimmed = list(required_notes) + random.sample(optional, num_optional)
-                    fitness = eval_scale_cached(trimmed)
-                    population.append((fitness, trimmed))
-            else:
-                # Scale is shorter - add notes from candidates to reach target
-                scale_set = set(scale)
-                available = [c for c in candidates 
-                            if c not in scale_set and c not in excluded_notes]
-                num_to_add = target_len - len(scale)
-                if len(available) >= num_to_add:
-                    # Weight toward simpler ratios (O(1) lookup via dict)
-                    available_weights = [candidate_weight_map.get(c, 0.001) 
-                                        for c in available]
-                    additions = []
-                    for _ in range(num_to_add):
-                        if not available:
-                            break
-                        # Weighted random selection
-                        total_w = sum(available_weights)
-                        r = random.random() * total_w
-                        cumsum = 0
-                        for idx, w in enumerate(available_weights):
-                            cumsum += w
-                            if cumsum >= r:
-                                additions.append(available[idx])
-                                available.pop(idx)
-                                available_weights.pop(idx)
-                                break
-                    expanded = list(scale) + additions
-                    if config.check_constraints(expanded):
-                        fitness = eval_scale_cached(expanded)
-                        population.append((fitness, expanded))
-        else:
-            if config.min_notes - 1 <= len(scale) <= config.max_notes - 1:
-                fitness = eval_scale_cached(scale)
-                population.append((fitness, list(scale)))
+    # Seed scales, each with its inversion and up to three rotations. Under
+    # free slot assignment those variants are skipped: inverting or rotating
+    # re-sorts the notes, which turns a seed into an arbitrary slot assignment
+    # rather than a variant of it.
+    seed_variants = not grouped or config.ordered_slots
+    seed_pool = {}
+    for seed in (seed_scales or []):
+        variants = [seed]
+        if seed_variants:
+            inverted = scale_invert(seed, config.ratio_limit)
+            if inverted:
+                variants.append(inverted)
+            for _ in range(min(3, len(seed))):
+                rotated = scale_rotate(seed, limit=config.ratio_limit)
+                if rotated:
+                    variants.append(rotated)
+        for v in variants:
+            prepared = prepare_seed(v)
+            if prepared is None:
+                continue
+            key = cache_key(prepared)
+            if key not in seed_pool:
+                seed_pool[key] = (eval_scale_cached(prepared), prepared)
     
-    # Add seed scales and their transformations
-    target_len = config.fixed_notes - 1 if config.fixed_notes is not None else None
-    
-    for seed in seed_scales:
-        # Original seed
-        add_scale_if_valid(seed, target_len)
-        
-        # Inverted version
-        inverted = scale_invert(seed, config.ratio_limit)
-        if inverted:
-            add_scale_if_valid(inverted, target_len)
-        
-        # Rotated versions (try a few random rotations)
-        for _ in range(min(3, len(seed))):
-            rotated = scale_rotate(seed, limit=config.ratio_limit)
-            if rotated:
-                add_scale_if_valid(rotated, target_len)
+    # Seeds may fill at most max_seed_individuals places, best first, so the
+    # rest of the population starts random. Uncapped, a 200-scale seed file
+    # produced around 1000 seed-derived individuals for a population of 300:
+    # generation 0 overflowed to three times its size and contained no random
+    # scales at all.
+    seeded = sorted(seed_pool.values(), key=lambda x: x[0], reverse=True)
+    population.extend(seeded[:config.max_seed_individuals])
+    if verbose and seed_pool:
+        print(f"Seeded {len(population)} of {len(seed_pool)} seed-derived scales "
+              f"(best first); the other {config.population_size - len(population)} "
+              f"start random.")
+        print()
     
     # Fill rest with random scales (biased toward simpler ratios)
     while len(population) < config.population_size:
         scale = fresh_random_scale()
+        if scale is None:
+            continue
         fitness = eval_scale_cached(scale)
         population.append((fitness, scale))
     
@@ -810,7 +837,7 @@ def evolve(config: SearchConfig, verbose: bool = True,
             # Show raw quality (not boosted) for current top
             current_quality = eval_scale_cached(population[0][1])  # Raw from cache
             best_quality = best_ever[0]  # Already raw
-            unique = len(set(frozenset((r.numerator, r.denominator) for r in ind[1]) for ind in population[:50]))
+            unique = len({cache_key(ind[1]) for ind in population[:50]})
             
             # Compute fingerprint diversity (average pairwise distance in top 20)
             fp_sample = [get_fingerprint(ind[1]) for ind in population[:20]]
@@ -854,17 +881,28 @@ def evolve(config: SearchConfig, verbose: bool = True,
                 new_population.append((fitness, fresh))
         
         # Elite selection using fingerprint-based diversity
-        elites = select_elites_diverse(population, config.elite_count + 3, get_fingerprint)
+        elites = select_elites_diverse(population, config.elite_count + 3,
+                                       get_fingerprint, cache_key)
+        best_key = cache_key(best_ever[1])
         for elite in elites[:config.elite_count + 1]:  # One less since we added best_ever
-            if elite[1] != best_ever[1]:  # Don't duplicate best_ever
+            if cache_key(elite[1]) != best_key:  # Don't duplicate best_ever
                 new_population.append(elite)
         
         # Get population fingerprints for diversity scoring
         pop_fingerprints = [get_fingerprint(ind[1]) for ind in population[:50]]  # Top 50
         pop_fingerprints = [fp for fp in pop_fingerprints if fp]  # Filter empty
         
-        # Breed rest
+        # Breed rest. Children that fail repair or constraints are discarded;
+        # if that keeps happening the remaining places go to fresh random
+        # scales, rather than spinning here indefinitely.
+        failures = 0
+        max_failures = 20 * config.population_size
         while len(new_population) < config.population_size:
+            if failures > max_failures:
+                fresh = fresh_random_scale()
+                if fresh is not None:
+                    new_population.append((eval_scale_cached(fresh), fresh))
+                continue
             parent1 = tournament_select(population, config.tournament_size)
             parent2 = tournament_select(population, config.tournament_size)
             
@@ -880,14 +918,15 @@ def evolve(config: SearchConfig, verbose: bool = True,
                 # Repair to exact slot count, preserving each note's slot.
                 # Invert and rotate are skipped: both re-sort the scale, which
                 # would silently reassign every note to a different group.
-                child = repair_slots(child, config.num_slots - 1, candidates,
-                                     config, candidate_weight_map)
+                child = repair(child)
                 if child is None or not config.check_constraints(child):
+                    failures += 1
                     continue
             else:
                 # Sanitize: ensure all ratios are within octave
                 child = sanitize_scale(child)
                 if not child:
+                    failures += 1
                     continue  # Skip if sanitization produced empty scale
                 
                 # Occasional drastic mutations: invert or rotate entire scale
@@ -924,9 +963,11 @@ def evolve(config: SearchConfig, verbose: bool = True,
                 accept_prob = math.exp(-delta / temperature) if temperature > 0 else 0
                 if random.random() > accept_prob:
                     if random.random() < 0.3:
-                        child = fresh_random_scale()
-                        raw_fitness = eval_scale_cached(child)
-                        selection_fitness = raw_fitness
+                        fresh = fresh_random_scale()
+                        if fresh is not None:
+                            child = fresh
+                            raw_fitness = eval_scale_cached(child)
+                            selection_fitness = raw_fitness
             
             # Track best_ever using RAW fitness (no diversity bonus)
             if raw_fitness > best_ever[0]:
@@ -942,7 +983,8 @@ def evolve(config: SearchConfig, verbose: bool = True,
             for i in range(min(3, len(new_population))):
                 improved_scale, improved_fitness = local_search(
                     new_population[i][1], candidates, eval_scale_cached, config, 
-                    max_iterations=5, candidate_cents=candidate_cents)
+                    max_iterations=5, candidate_cents=candidate_cents,
+                    normalize=repair if grouped else None)
                 if improved_fitness > new_population[i][0]:
                     new_population[i] = (improved_fitness, improved_scale)
                     if improved_fitness > best_ever[0]:
@@ -957,7 +999,8 @@ def evolve(config: SearchConfig, verbose: bool = True,
         print("Polishing best solution with local search...")
     best_scale, best_fitness = local_search(
         best_ever[1], candidates, eval_scale_cached, config, 
-        max_iterations=20, candidate_cents=candidate_cents)
+        max_iterations=20, candidate_cents=candidate_cents,
+        normalize=repair if grouped else None)
     if best_fitness > best_ever[0]:
         best_ever = (best_fitness, best_scale)
     
@@ -972,10 +1015,11 @@ def evolve(config: SearchConfig, verbose: bool = True,
         # assignment to reconstruct which notes form which sub-scale.
         _, details = evaluate_grouped_scale(
             best_scale, groups, metrics, octave_range, interval_cache,
-            scale_metrics, edo, combine_method, metric_value_cache, global_weight)
+            scale_metrics, edo, combine_method, global_weight)
         return list(best_scale), best_fitness, details
     
-    _, details = evaluate_scale(best_scale, metrics, octave_range, interval_cache, scale_metrics, edo, combine_method, metric_value_cache)
+    _, details = evaluate_scale(best_scale, metrics, octave_range, interval_cache,
+                                scale_metrics, edo, combine_method)
     return sorted(best_scale), best_fitness, details
 
 

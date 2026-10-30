@@ -31,6 +31,7 @@ __all__ = [
     'parse_metrics', 'format_metric_description',
     # Fingerprinting
     'scale_fingerprint', 'fingerprint_distance', 'fingerprint_diversity_score',
+    'cached_metric_nd',
 ]
 
 # =============================================================================
@@ -47,11 +48,24 @@ def clear_metric_cache():
 
 def cached_metric(ratio: Fraction, metric_name: str) -> float:
     """Get cached metric value, computing if necessary."""
-    key = (ratio.numerator, ratio.denominator, metric_name)
-    if key not in _metric_cache:
+    return cached_metric_nd(ratio.numerator, ratio.denominator, metric_name)
+
+
+def cached_metric_nd(n: int, d: int, metric_name: str) -> float:
+    """
+    cached_metric for a ratio given as numerator and denominator.
+
+    The evaluation loop works on (n, d) integer pairs for speed, and only needs
+    a Fraction when a value is not yet cached — building one per lookup would
+    cost more than the lookup itself.
+    """
+    key = (n, d, metric_name)
+    value = _metric_cache.get(key)
+    if value is None:
         metric_fn, _ = CONSONANCE_METRICS[metric_name]
-        _metric_cache[key] = metric_fn(ratio)
-    return _metric_cache[key]
+        value = metric_fn(Fraction(n, d))
+        _metric_cache[key] = value
+    return value
 
 
 # =============================================================================
@@ -70,7 +84,7 @@ def tenney_height(ratio: Fraction) -> float:
 def euler_gradus(ratio: Fraction) -> float:
     """
     Euler's Gradus Suavitatis (degree of sweetness).
-    Î“ = 1 + Î£(p - 1) * e for prime factorization Î p^e
+    Γ = 1 + Σ(p - 1) * e for prime factorization Πp^e
     Applied to n*d of ratio n/d.
     Lower = more consonant. Favors powers of 2 and 3.
     """
@@ -98,7 +112,7 @@ def harmonic_entropy(ratio: Fraction, spread: float = 0.017) -> float:
     have higher entropy than those clearly identified with one simple ratio.
     
     The spread parameter (in octaves) controls the uncertainty window.
-    0.017 octaves â‰ˆ 20 cents, which is roughly a just-noticeable difference.
+    0.017 octaves ≈ 20 cents, which is roughly a just-noticeable difference.
     
     Lower = more consonant (less ambiguous).
     """
@@ -191,15 +205,15 @@ def step_size_penalty(scale: List[Fraction], threshold_cents: float = 80.0,
     
     The decay parameter controls how quickly penalty drops off.
     With threshold=80 and decay=25:
-      - 0 cents (unison): penalty â‰ˆ 1.0
-      - 30 cents: penalty â‰ˆ 0.3
-      - 50 cents: penalty â‰ˆ 0.14
-      - 80 cents: penalty â‰ˆ 0.04
+      - 0 cents (unison): penalty ≈ 1.0
+      - 30 cents: penalty ≈ 0.3
+      - 50 cents: penalty ≈ 0.14
+      - 80 cents: penalty ≈ 0.04
     
     Returns average penalty across all adjacent steps.
     Lower = better (more distinct steps).
     """
-    if len(scale) < 2:
+    if not scale:
         return 0.0
     
     full_scale = sorted([Fraction(1, 1)] + list(scale) + [Fraction(2, 1)])
@@ -237,11 +251,11 @@ def prime_diversity_score(scale: List[Fraction]) -> float:
     Returns sum of 1/p for each distinct prime p > 5.
     
     This naturally weights lower primes more heavily:
-    - Having 7 contributes 1/7 â‰ˆ 0.143
-    - Having 11 contributes 1/11 â‰ˆ 0.091  
-    - Having 13 contributes 1/13 â‰ˆ 0.077
-    - Having 17 contributes 1/17 â‰ˆ 0.059
-    - Having 19 contributes 1/19 â‰ˆ 0.053
+    - Having 7 contributes 1/7 ≈ 0.143
+    - Having 11 contributes 1/11 ≈ 0.091  
+    - Having 13 contributes 1/13 ≈ 0.077
+    - Having 17 contributes 1/17 ≈ 0.059
+    - Having 19 contributes 1/19 ≈ 0.053
     
     Example scores:
     - 5-limit only: 0.0
@@ -264,7 +278,7 @@ def edo_penalty(scale: List[Fraction], edo: int = 12) -> float:
     Notes at EDO steps get 0 penalty.
     Notes at midpoints (halfway between steps) get maximum penalty of 1.
     
-    Uses cosine curve: penalty = (1 - cos(2Ï€ * distance / step_size)) / 2
+    Uses cosine curve: penalty = (1 - cos(2π * distance / step_size)) / 2
     This gives smooth transitions with 0 at steps and 1 at midpoints.
     
     Returns average penalty across all scale notes (0 = perfect EDO match).
@@ -387,8 +401,8 @@ def scale_balance(scale: List[Fraction]) -> float:
     
     Examples:
     - 12-EDO: balance = 0 (all steps equal)
-    - Major scale: balance â‰ˆ 0.33 (mix of whole and half steps)
-    - Pentatonic: balance â‰ˆ 0.22 (fairly even)
+    - Major scale: balance ≈ 0.33 (mix of whole and half steps)
+    - Pentatonic: balance ≈ 0.22 (fairly even)
     """
     if len(scale) < 1:
         return 0.0
@@ -432,67 +446,55 @@ def scale_propriety(scale: List[Fraction]) -> float:
     
     Many common scales (major, pentatonic) are proper or strictly proper.
     Improper scales can feel unstable or ambiguous.
+
+    Interval classes are taken cyclically, from every degree including those
+    whose k-step interval crosses the octave. Propriety is a property of all
+    modes at once, and the intervals that cross the octave are often exactly
+    the ones that decide it: in the Pythagorean diatonic the 4-step diminished
+    fifth B-F (588 cents) is smaller than the 3-step augmented fourth F-B
+    (612 cents), which is what makes that scale improper, and B-F only exists
+    by wrapping past the octave. Counting only intervals that fit inside one
+    octave from the tonic misses it and calls the scale proper.
     """
     if len(scale) < 2:
         return 0.0
-    
-    # Full scale with 1/1 and 2/1
-    full_scale = [Fraction(1, 1)] + sorted(scale) + [Fraction(2, 1)]
-    n = len(full_scale) - 1  # Number of scale degrees (not counting octave)
-    
-    # Track only min and max interval size per step count (no list allocation)
-    # intervals_range[k] = (min_cents, max_cents) for intervals spanning k steps
-    intervals_range = {}
-    
-    for i in range(len(full_scale) - 1):
-        for j in range(i + 1, len(full_scale)):
-            steps = j - i
-            interval = full_scale[j] / full_scale[i]
-            # Don't octave reduce - we want actual interval sizes within the octave
-            cents = 1200 * math.log2(float(interval))
-            
-            if steps in intervals_range:
-                mn, mx = intervals_range[steps]
-                if cents < mn:
-                    mn = cents
-                if cents > mx:
-                    mx = cents
-                intervals_range[steps] = (mn, mx)
-            else:
-                intervals_range[steps] = (cents, cents)
-    
-    # Check for propriety violations
-    # Compare max of k-step intervals with min of (k+1)-step intervals
+
+    pcs = [0.0] + sorted(1200.0 * math.log2(float(r)) for r in scale)
+    n = len(pcs)  # Scale degrees, tonic included, octave excluded
+
+    # Smallest and largest k-step interval over all starting degrees
+    smallest = {}
+    largest = {}
+    for k in range(1, n):
+        lo = hi = None
+        for i in range(n):
+            j = i + k
+            size = pcs[j] - pcs[i] if j < n else pcs[j - n] + 1200.0 - pcs[i]
+            if lo is None or size < lo:
+                lo = size
+            if hi is None or size > hi:
+                hi = size
+        smallest[k] = lo
+        largest[k] = hi
+    # The n-step class is the octave itself
+    smallest[n] = largest[n] = 1200.0
+
+    # Compare the largest k-step interval with the smallest (k+1)-step one.
+    # Equality counts as a violation of strict propriety but adds no overlap,
+    # so equal-tempered scales (proper, not strictly proper) score 0.
     violations = 0.0
-    total_comparisons = 0
-    
-    step_counts = sorted(intervals_range.keys())
-    for i in range(len(step_counts) - 1):
-        k = step_counts[i]
-        k_next = step_counts[i + 1]
-        
-        if k_next != k + 1:
-            continue  # Skip if not consecutive step classes
-        
-        max_k = intervals_range[k][1]
-        min_k_next = intervals_range[k_next][0]
-        
-        total_comparisons += 1
-        
-        # Violation if max of smaller step class >= min of larger step class
-        if max_k >= min_k_next:
-            # Degree of violation (how much overlap in cents, normalized)
-            overlap = (max_k - min_k_next) / 100  # Normalize by ~semitone
-            violations += overlap
-    
-    return violations / total_comparisons if total_comparisons > 0 else 0.0
+    for k in range(1, n):
+        if largest[k] >= smallest[k + 1]:
+            violations += (largest[k] - smallest[k + 1]) / 100  # in semitones
+
+    return violations / (n - 1)
 
 
 def scale_variety(scale: List[Fraction]) -> float:
     """
     Measure interval variety using soft clustering via Gaussian kernel.
     
-    For each pair of intervals, computes similarity = exp(-dÂ²/2ÏƒÂ²) where d is
+    For each pair of intervals, computes similarity = exp(-d²/2σ²) where d is
     the distance in cents. Sums all similarities - lower sum means intervals
     are more spread out (higher variety).
     
@@ -764,21 +766,34 @@ def parse_metrics(metric_str: str) -> Tuple[List[Tuple[str, float]], List[Tuple[
     interval_metrics = []
     scale_metrics = []
     edo = 0
-    
+
     for part in metric_str.split(','):
         part = part.strip()
+        if not part:
+            continue  # Tolerate "barlow," and "barlow,,tenney"
         if ':' in part:
-            name, weight = part.split(':', 1)
-            name = name.strip()
-            weight = float(weight)
+            name, weight_str = part.split(':', 1)
+            name = name.strip().lower()
+            try:
+                weight = float(weight_str)
+            except ValueError:
+                raise ValueError(
+                    f"Weight for '{name}' must be a number, got '{weight_str.strip()}'"
+                ) from None
         else:
-            name = part
+            name = part.lower()
             weight = 1.0
-        
+
         # Check for edo/neji pattern (e.g., edo12, neji19)
-        edo_match = re.match(r'^(edo|neji)(\d+)$', name.lower())
+        edo_match = re.match(r'^(edo|neji)(\d+)$', name)
         if edo_match:
-            edo = int(edo_match.group(2))
+            n = int(edo_match.group(2))
+            if n < 2:
+                raise ValueError(f"'{name}': an equal division needs at least 2 steps")
+            if edo and n != edo:
+                raise ValueError(f"Only one EDO can be targeted at a time "
+                                 f"(got edo{edo} and edo{n})")
+            edo = n
             scale_metrics.append(('edo', weight))
         elif name in CONSONANCE_METRICS:
             interval_metrics.append((name, weight))
@@ -786,7 +801,7 @@ def parse_metrics(metric_str: str) -> Tuple[List[Tuple[str, float]], List[Tuple[
             scale_metrics.append((name, weight))
         else:
             all_metrics = list(CONSONANCE_METRICS.keys()) + list(SCALE_METRICS.keys()) + ['edoN/nejiN']
-            raise ValueError(f"Unknown metric: {name}. Available: {all_metrics}")
+            raise ValueError(f"Unknown metric: {name}. Available: {', '.join(all_metrics)}")
     
     # Default to barlow if no interval metrics specified
     if not interval_metrics:
@@ -812,21 +827,28 @@ def combined_metric(ratio: Fraction, metrics: List[Tuple[str, float]], normalize
     other for individual intervals — what matters is the overall scale being
     good on all metrics, not every interval. Strictness across intervals is
     controlled by the --combine flag (geometric, logloss, worst, etc.).
-    
-    If normalize=False, returns a simple weighted arithmetic mean of raw scores.
+
+    A negative weight inverts the metric: its penalty p counts as 1 - p, with
+    weight |w|. Using signed weights directly in the mean was broken — with
+    'barlow:1,tenney:-1' the weights sum to zero and every interval scored the
+    same, and mixed signs could push the result outside [0, 1].
+
+    If normalize=False, returns a weighted mean of raw (unnormalized) scores.
     """
     total = 0.0
     total_weight = 0.0
-    
+
     for metric_name, weight in metrics:
         score = cached_metric(ratio, metric_name)
-        
+
         if normalize:
             score = quantile_normalize(score, metric_name)
-        
-        total += weight * score
-        total_weight += weight
-    
+            if weight < 0:
+                score = 1.0 - score
+
+        total += abs(weight) * score
+        total_weight += abs(weight)
+
     return total / total_weight if total_weight > 0 else 0.0
 
 

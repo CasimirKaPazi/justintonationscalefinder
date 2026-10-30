@@ -90,10 +90,22 @@ python scale_search.py --metric "wilson:1,barlow:1,propriety:1,variety:0.1,entro
 |--------|-------------|
 | `steps` | Penalizes clustered notes |
 | `balance` | Step size evenness (coefficient of variation) |
-| `propriety` | Rothenberg propriety (interval class overlap) |
+| `propriety` | Rothenberg propriety (interval class overlap, all modes) |
 | `primes` | Rewards prime diversity (better use variety) |
 | `variety` | Interval variety |
 | `edoN` | Proximity to N-EDO (for neji scales), e.g. `edo12` |
+
+### Weights
+
+Each metric takes a weight, `name:weight`; without one it counts 1. A
+**negative weight inverts** the metric: `variety:-0.5` rewards *low* variety,
+`tenney:-1` prefers complex ratios. Internally the metric's quality *q* counts
+as *1 − q* with weight |*w*|, which keeps every score between 0 and 1.
+
+Propriety compares interval classes across all modes, including intervals that
+cross the octave. The Pythagorean diatonic is improper because its 4-step
+diminished fifth B–F (588 cents) is smaller than its 3-step augmented fourth F–B
+(612 cents), and B–F only exists by wrapping past the octave.
 
 ## Interval Combination Methods
 
@@ -197,6 +209,10 @@ python scale_search.py --groups 16cell.txt --metric soft_tenney
 
 Every slot must appear in at least one sub-scale, or its note would be
 unconstrained; this is checked and reported.
+
+A line given more than once counts more than once, which is how to weight a
+sub-scale: in `12tone-full.txt` the 36 chords otherwise outvote the 12 keys,
+and repeating each key line three times puts them on an equal footing.
 
 **Slot numbering.** By default the search may put any pitch in any slot, which
 is right for polytopes, where the numbering is an arbitrary labelling of
@@ -351,7 +367,10 @@ are checked too, so a result is still recognised as a known scale when it
 starts from a different degree.
 
 Scales of a different size are reported as containment rather than identity,
-with the `Match` column showing how many notes landed inside.
+with the `Match` column showing how many of the result's notes landed on the
+reference scale: `within N-note scale` when the result lies inside a larger
+reference, `contains N-note scale` when a smaller reference lies inside the
+result, and `partial` otherwise.
 
 `--edo-range MIN:MAX` sets the divisions searched (default `5:72`). An equal
 division only counts if every note lands on a **distinct** step, so a 12-note
@@ -410,12 +429,19 @@ below a thousandth of a cent — a `.scl` file holding 12-EDO in cents round-tri
 to a perfect 12-EDO fit.
 
 `--analyze` also works on a single `--compare` scale, which answers "what is
-this scale?":
+this scale?". `--compare` accepts cents as well as ratios, so an equal
+temperament or a measured tuning can be identified the same way:
 
 ```bash
 python scale_search.py --compare "9/8,5/4,4/3,3/2,5/3,15/8" \
     --reference ~/scala/scl --analyze
+python scale_search.py --compare "100.0,200.0,300.0,400.0,500.0,600.0,700.0,800.0,900.0,1000.0,1100.0" \
+    --reference ~/scala/scl --analyze
 ```
+
+`--compare --seeds` ranks every scale in a seed file, a `.scl` file or a whole
+archive; with an archive, `--notes` narrows the set before anything is
+evaluated.
 
 ### Seeding from the Scala archive
 
@@ -430,10 +456,16 @@ python scale_search.py --notes 7 --metric "barlow:1,propriety:1" \
 ```
 
 ```
-Loaded 4483 scales from ~/scala/scl; 775 usable as seeds, keeping best 50.
-  Skipped: 3389 wrong size (need 7 notes), 336 outside ratio limit 32
-  Best seed: ptolemy_diat.scl (quality 0.9933)
+Loaded 4500 scales from ~/scala/scl; 1690 usable as seeds, keeping best 150.
+  Skipped: 2313 outside 5-9 notes, 494 outside ratio limit 32
+  Best seed: <file>.scl (quality 0.9792)
+...
+Seeded 150 of 746 seed-derived scales (best first); the other 150 start random.
 ```
+
+(The counts are from a run on a 4500-file test archive; they depend on the
+archive and the settings. When some of the kept scales have the wrong size, a
+further line says how many the search will resize.)
 
 An archive holds thousands of scales and a population holds tens, so this
 selects rather than loads, in three steps:
@@ -459,7 +491,8 @@ selects rather than loads, in three steps:
 3. **Scoring.** What survives is evaluated and the best kept, since a seed only
    earns a population slot if it beats random initialisation.
 
-`--max-seeds N` sets how many to keep (default 50), capped at `--population`.
+How many are kept is `--max-seeds`, which applies to every kind of seed source
+and is described under [Seed File](#seed-file).
 
 In testing the gain was small — about 0.0003 on a 12-note search — so treat this
 as a way to start somewhere musically real rather than as a way to get better
@@ -491,9 +524,24 @@ Format:
 2/1
 ```
 
-Scala .scl files are also supported.
+`--seeds` also takes a single `.scl` file or a directory of them (see
+[Seeding from the Scala archive](#seeding-from-the-scala-archive)). Only the
+first item on a line is read, so a line may carry a comment after the pitch.
 
-Scales that are outside of the specified note range get extended or trimmed. This way a e.g. 12 notes search can be informed by e.g. 5 note or 31 note scales.
+Seeds are adapted to the search rather than used as they are:
+
+- Scales outside the note range are trimmed or extended, both with `--notes`
+  and with `--min-notes`/`--max-notes`. This way a 12-note search can be
+  informed by 5-note or 31-note scales.
+- Excluded notes are dropped and missing required notes added, so `--include`
+  doesn't silently disqualify every seed that lacks the note.
+- Each seed also contributes its inversion and up to three rotations.
+
+Seeds and their variants fill **at most half the population** by default, best
+first; the rest starts random. `--max-seeds N` changes that number, up to the
+whole population. Without a limit, a 200-scale seed file used to produce about
+1000 seed-derived individuals for a population of 300, so the first generation
+held no random scales at all.
 
 The file `seeds.txt` provides over 200 scales for up to 31 notes.
 
@@ -509,7 +557,12 @@ The tool outputs:
 - Elapsed time and ETA during search
 
 Use `--quiet` to suppress everything except the quality score and scale ratios.
-Use `--json` for machine-readable output (includes quality, scale ratios, cents, and metric breakdown).
+Use `--json` for machine-readable output: quality, scale ratios, cents and the
+metric breakdown, plus slot order and sub-scales with `--groups` and the
+analysis with `--analyze`. `--compare --json` gives the ranking.
+
+Invalid options are reported before the search starts, on stderr, with exit
+code 2.
 
 ## Algorithm
 

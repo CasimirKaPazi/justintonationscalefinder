@@ -957,17 +957,24 @@ def evolve(config: SearchConfig, verbose: bool = True,
                     diversity_bonus = diversity * 0.02 * min(1.0, stagnation_counter / 20)
                     selection_fitness = raw_fitness + diversity_bonus
             
-            # Simulated annealing acceptance (uses boosted fitness for selection)
-            if new_population and selection_fitness < new_population[-1][0]:
-                delta = new_population[-1][0] - selection_fitness
-                accept_prob = math.exp(-delta / temperature) if temperature > 0 else 0
-                if random.random() > accept_prob:
-                    if random.random() < 0.3:
-                        fresh = fresh_random_scale()
-                        if fresh is not None:
-                            child = fresh
-                            raw_fitness = eval_scale_cached(child)
-                            selection_fitness = raw_fitness
+            # Simulated annealing: the child competes with its own parent
+            # (parallel recombinative simulated annealing). A child at least as
+            # good always replaces the parent; a worse one with probability
+            # exp(-delta / T), so early on, while T is high, the population
+            # accepts downhill moves freely, and later almost never. Otherwise
+            # the parent survives in the child's place.
+            #
+            # This used to compare the child with whichever individual had been
+            # appended last, an arbitrary reference, and on "rejection" kept
+            # the child anyway 70% of the time and swapped in a random scale
+            # the other 30%, so the temperature barely shaped anything.
+            parent_fitness = eval_scale_cached(parent1)
+            if selection_fitness < parent_fitness:
+                delta = parent_fitness - selection_fitness
+                accept_prob = math.exp(-delta / temperature) if temperature > 0 else 0.0
+                if random.random() >= accept_prob:
+                    child = parent1
+                    raw_fitness = selection_fitness = parent_fitness
             
             # Track best_ever using RAW fitness (no diversity bonus)
             if raw_fitness > best_ever[0]:

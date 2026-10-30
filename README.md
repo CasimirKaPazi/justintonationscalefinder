@@ -270,6 +270,31 @@ you want sub-scales actively pushed apart rather than merely non-identical, that
 would need a term rewarding dissimilarity between groups, which is not
 implemented.
 
+### Separate metrics for the whole scale
+
+By default the sub-scales and the whole scale are scored with the same
+`--metric`. `--global-metric` gives the whole scale its own metrics, in the
+same format, while `--metric` then applies to the sub-scales only:
+
+```bash
+python scale_search.py --groups 24cell --metric soft_tenney \
+    --global-metric "edo24:2,steps:1"
+```
+
+This matters for properties that only make sense for the whole tuning. An EDO
+term placed in `--metric` is applied to each sub-scale separately, and nothing
+there stops notes from different cells landing on the same EDO step: in
+testing, `--metric soft_tenney:1,edo24:1` on the 24-cell left 2–3 of the 24
+steps empty in every run, with notes doubled up on others. With the EDO term
+moved into `--global-metric "edo24:2,steps:1"` every run occupied all 24 steps,
+at a slightly larger average deviation (about 3 cents instead of 2).
+
+`--global-metric` may consist of scale metrics alone, as above; then no
+intervals of the whole scale are scored. It is still blended in by
+`--global-weight`. In the output, the metric breakdown reports the whole scale
+with these metrics, while the interval matrix and the sub-scale table use
+`--metric`.
+
 ### Reading the output
 
 The sub-scale table lists each group's notes **as they sit in the parent scale**,

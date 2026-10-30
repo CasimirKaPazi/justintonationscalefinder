@@ -144,6 +144,11 @@ def _build_parser() -> argparse.ArgumentParser:
                              "icosahedron, dodecahedron, 16cell, 24cell), optionally "
                              "with ranks (e.g. 24cell:faces), 'cyclic:N,k[,step]', "
                              "or a group file. Sets the note count; --notes is ignored.")
+    parser.add_argument("--global-metric", type=str, default=None, metavar="METRICS",
+                        help="With --groups: metrics for the whole scale, in the same "
+                             "format as --metric, while --metric then applies to the "
+                             "sub-scales only. May consist of scale metrics alone, e.g. "
+                             "'edo24:2,steps:1'. Default: the whole scale uses --metric too.")
     parser.add_argument("--global-weight", type=float, default=0.3, metavar="W",
                         help="With --groups: blend sub-scale quality with whole-scale "
                              "quality as local^(1-W) * global^W (default: 0.3). "
@@ -223,6 +228,14 @@ def _parse_constraints(args):
         _fail(str(e))
 
 
+def _describe_metrics(metrics, scale_metrics, edo):
+    """Like format_metric_description, but allows an empty interval list."""
+    if metrics:
+        return format_metric_description(metrics, scale_metrics, edo)
+    parts = [f"edo{edo}:{w}" if n == 'edo' else f"{n}:{w}" for n, w in scale_metrics]
+    return "scale[" + ", ".join(parts) + "]"
+
+
 def _print_metric_list():
     print("Available interval metrics (applied to each interval pair):")
     print()
@@ -282,6 +295,18 @@ def main(argv=None):
     except ValueError as e:
         _fail(str(e))
 
+    global_metrics = global_scale_metrics = None
+    global_edo = 0
+    if args.global_metric is not None:
+        if not args.groups:
+            _fail("--global-metric only applies with --groups; without groups, "
+                  "--metric already scores the whole scale")
+        try:
+            global_metrics, global_scale_metrics, global_edo = parse_metrics(
+                args.global_metric, default_interval_metric=None)
+        except ValueError as e:
+            _fail(f"--global-metric: {e}")
+
     required_notes, excluded_notes = _parse_constraints(args)
 
     # Set random seed for reproducibility
@@ -334,6 +359,9 @@ def main(argv=None):
             group_name=structure.name if structure else None,
             global_weight=args.global_weight,
             ordered_slots=args.ordered_slots,
+            global_metrics=global_metrics,
+            global_scale_metrics=global_scale_metrics,
+            global_edo=global_edo,
         )
     except ValueError as e:
         _fail(str(e))
@@ -376,7 +404,12 @@ def main(argv=None):
             print(f"Notes: {note_desc}")
         print(f"Ratio limit: {config.ratio_limit}")
         print(f"Octave range: {octave_desc}")
-        print(f"Metric: {metric_desc}")
+        if global_metrics is not None:
+            print(f"Metric (sub-scales): {metric_desc}")
+            print("Metric (whole scale): "
+                  + _describe_metrics(global_metrics, global_scale_metrics, global_edo))
+        else:
+            print(f"Metric: {metric_desc}")
         print(f"Interval combination: {combine_desc_str}")
         print(f"Generations: {config.generations}")
         if args.runs > 1:
@@ -412,9 +445,15 @@ def main(argv=None):
     scale, fitness, details = best_overall
     analysis = _analysis_data(scale, args) if args.analyze else None
 
+    # In grouped mode `details` describe the whole scale, so the breakdown
+    # reports the metrics the whole scale was scored with
+    bd_metrics, bd_scale_metrics, bd_edo = metrics, scale_metrics, edo
+    if global_metrics is not None:
+        bd_metrics, bd_scale_metrics, bd_edo = global_metrics, global_scale_metrics, global_edo
+
     # JSON output
     if args.json:
-        _output_json(scale, details, metrics, scale_metrics, edo,
+        _output_json(scale, details, bd_metrics, bd_scale_metrics, bd_edo,
                      seed_scales, seed_names, structure, analysis)
         return
 
@@ -425,7 +464,7 @@ def main(argv=None):
 
     # Summary
     print(f"\nQuality: {details['quality']:.4f}")
-    if verbose:
+    if verbose and details['num_intervals']:
         print(f"Intervals evaluated: {details['num_intervals']} (across {octave_desc})")
 
     # Check if this scale matches a seed
@@ -442,9 +481,11 @@ def main(argv=None):
 
     if verbose:
         # Show individual metric scores
-        if len(metrics) > 1 or scale_metrics:
-            print("\nMetric breakdown (0-1, higher=better):")
-            for label, quality, weight in metric_breakdown(details, metrics, scale_metrics, edo):
+        if len(bd_metrics) + len(bd_scale_metrics) > 1:
+            title = "Metric breakdown, whole scale" if structure else "Metric breakdown"
+            print(f"\n{title} (0-1, higher=better):")
+            for label, quality, weight in metric_breakdown(details, bd_metrics,
+                                                           bd_scale_metrics, bd_edo):
                 print(f"  {label}: {quality:.3f} (weight {weight})")
 
         # Interval matrix
@@ -1063,7 +1104,7 @@ def _output_json(scale, details, metrics, scale_metrics, edo,
     }
 
     # Metric breakdown
-    if len(metrics) > 1 or scale_metrics:
+    if len(metrics) + len(scale_metrics) > 1:
         result["metrics"] = {
             label: {"quality": round(quality, 4), "weight": weight}
             for label, quality, weight in metric_breakdown(details, metrics, scale_metrics, edo)

@@ -123,6 +123,11 @@ class SearchConfig:
     # Blend between sub-scale quality and whole-scale quality:
     # final = local^(1 - global_weight) * global^global_weight
     global_weight: float = 0.3
+    # Metrics for the whole scale in grouped search. None means the whole
+    # scale is scored with the same metrics as the sub-scales.
+    global_metrics: Optional[List[Tuple[str, float]]] = None
+    global_scale_metrics: Optional[List[Tuple[str, float]]] = None
+    global_edo: int = 0
 
     def __post_init__(self):
         if self.metrics is None:
@@ -159,6 +164,8 @@ class SearchConfig:
             if not (0.0 <= self.global_weight <= 1.0):
                 raise ValueError(
                     f"global_weight must be between 0 and 1, got {self.global_weight}")
+        elif self.global_metrics is not None or self.global_scale_metrics is not None:
+            raise ValueError("global metrics only apply to grouped search (--groups)")
 
         self.combine_method = validate_combine_method(self.combine_method)
 

@@ -123,6 +123,10 @@ def evaluate_scale(scale: List[Fraction],
     
     # Build full scale across octaves
     base_scale = [Fraction(1, 1)] + sorted(scale) + [Fraction(2, 1)]
+    # With no interval metrics (possible at the whole-scale level of a grouped
+    # search) there is nothing to score per interval, so skip building them
+    if not metrics:
+        base_scale = []
     
     # Extend to multiple octaves - use tuples for speed
     full_scale = []
@@ -317,7 +321,11 @@ def evaluate_grouped_scale(genome: List[Fraction],
                            scale_metrics: List[Tuple[str, float]] = None,
                            edo: int = 0,
                            combine_method: str = 'geometric',
-                           global_weight: float = 0.3) -> Tuple[float, dict]:
+                           global_weight: float = 0.3,
+                           global_metrics: List[Tuple[str, float]] = None,
+                           global_scale_metrics: List[Tuple[str, float]] = None,
+                           global_edo: int = None,
+                           global_interval_cache: dict = None) -> Tuple[float, dict]:
     """
     Evaluate a slot-order genome by the quality of its sub-scales.
     
@@ -331,6 +339,14 @@ def evaluate_grouped_scale(genome: List[Fraction],
     At w=0 only the sub-scales matter and the full scale can be incoherent; at
     w=1 this reduces to ordinary whole-scale search and the grouping only
     constrains note count.
+
+    The whole scale is scored with the same metrics as the sub-scales unless
+    global_metrics / global_scale_metrics are given (either one switches the
+    whole scale to its own metric set). Some properties only make sense for
+    the whole scale: with a 24-cell and edo24, notes that never share a cell
+    are never compared by any sub-scale, so only the whole-scale term can keep
+    them from landing on the same EDO step. global_interval_cache must then be
+    a separate cache, since cached interval scores belong to one metric set.
     """
     full_slots = slots_to_pitches(genome)
     
@@ -361,9 +377,15 @@ def evaluate_grouped_scale(genome: List[Fraction],
     
     # Whole-scale quality, for the global blend and for reporting
     all_notes = sanitize_scale(genome)
-    _, global_details = evaluate_scale(
-        all_notes, metrics, octave_range, interval_cache,
-        scale_metrics, edo, combine_method)
+    if global_metrics is None and global_scale_metrics is None:
+        _, global_details = evaluate_scale(
+            all_notes, metrics, octave_range, interval_cache,
+            scale_metrics, edo, combine_method)
+    else:
+        _, global_details = evaluate_scale(
+            all_notes, global_metrics or [], octave_range, global_interval_cache,
+            global_scale_metrics or [], edo if global_edo is None else global_edo,
+            combine_method)
     global_quality = max(0.001, global_details['quality'])
     
     if global_weight <= 0.0:
@@ -639,6 +661,14 @@ def evolve(config: SearchConfig, verbose: bool = True,
     groups = config.groups
     global_weight = config.global_weight
     genome_len = config.num_slots - 1 if grouped else None
+    separate_global = (config.global_metrics is not None
+                       or config.global_scale_metrics is not None)
+    global_args = dict(
+        global_metrics=config.global_metrics,
+        global_scale_metrics=config.global_scale_metrics,
+        global_edo=config.global_edo,
+        global_interval_cache={} if separate_global else None,
+    )
     
     if grouped:
         def cache_key(scale):
@@ -657,7 +687,8 @@ def evolve(config: SearchConfig, verbose: bool = True,
             if grouped:
                 fitness, details = evaluate_grouped_scale(
                     scale, groups, metrics, octave_range, interval_cache,
-                    scale_metrics, edo, combine_method, global_weight)
+                    scale_metrics, edo, combine_method, global_weight,
+                    **global_args)
             else:
                 fitness, details = evaluate_scale(
                     scale, metrics, octave_range, interval_cache,
@@ -1026,7 +1057,7 @@ def evolve(config: SearchConfig, verbose: bool = True,
         # assignment to reconstruct which notes form which sub-scale.
         _, details = evaluate_grouped_scale(
             best_scale, groups, metrics, octave_range, interval_cache,
-            scale_metrics, edo, combine_method, global_weight)
+            scale_metrics, edo, combine_method, global_weight, **global_args)
         return list(best_scale), best_fitness, details
     
     _, details = evaluate_scale(best_scale, metrics, octave_range, interval_cache,

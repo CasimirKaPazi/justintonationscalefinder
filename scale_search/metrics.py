@@ -750,7 +750,8 @@ def fingerprint_diversity_score(fingerprint: Tuple[float, ...],
 
 
 
-def parse_metrics(metric_str: str) -> Tuple[List[Tuple[str, float]], List[Tuple[str, float]], int]:
+def parse_metrics(metric_str: str,
+                  default_interval_metric: str = 'barlow') -> Tuple[List[Tuple[str, float]], List[Tuple[str, float]], int]:
     """
     Parse metric specification string.
     Format: "metric1:weight1,metric2:weight2" or just "metric1"
@@ -803,9 +804,13 @@ def parse_metrics(metric_str: str) -> Tuple[List[Tuple[str, float]], List[Tuple[
             all_metrics = list(CONSONANCE_METRICS.keys()) + list(SCALE_METRICS.keys()) + ['edoN/nejiN']
             raise ValueError(f"Unknown metric: {name}. Available: {', '.join(all_metrics)}")
     
-    # Default to barlow if no interval metrics specified
-    if not interval_metrics:
-        interval_metrics = [('barlow', 1.0)]
+    if not interval_metrics and not scale_metrics:
+        raise ValueError("no metrics given")
+    # Default to barlow if no interval metrics specified. The whole-scale
+    # level of a grouped search passes None here: there, scale metrics alone
+    # (edo24, steps) are a meaningful choice, not an omission.
+    if not interval_metrics and default_interval_metric:
+        interval_metrics = [(default_interval_metric, 1.0)]
     
     return interval_metrics, scale_metrics, edo
 

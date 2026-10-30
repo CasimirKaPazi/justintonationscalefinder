@@ -319,6 +319,152 @@ score better than the rest. Output includes a `# slot order` block alongside the
 sorted scale — the sorted listing is what goes into a tuning file, the slot order
 is what reconstructs the geometry.
 
+## Analysis
+
+`--analyze` reports what a result resembles, after the search finishes:
+
+```bash
+python scale_search.py --notes 7 --metric "barlow:1,propriety:1" \
+    --seeds known.txt --analyze
+```
+
+```
+Closest scales in known.txt:
+
+   Max dev     RMS   Match  Name
+      0.0c    0.0c   7/7    Natural minor        (identical, mode 2)
+     21.5c    8.1c   7/7    Ptolemaic diatonic
+      0.0c    0.0c   7/7    5-limit chromatic    (within 12-note scale)
+
+Best equal divisions:
+
+   EDO    Fit   Max dev  Steps
+    53   0.13      1.5c  0 8 17 22 31 39 48
+    12   0.35     17.6c  0 2 4 5 7 9 11
+```
+
+Comparison is in cents, not by ratio identity: 9/8 and 10/9 are different
+ratios but only 21 cents apart, and a scale built from one is recognisably the
+same object as one built from the other — the example above says exactly that,
+the result differing from the Ptolemaic diatonic by one syntonic comma. Modes
+are checked too, so a result is still recognised as a known scale when it
+starts from a different degree.
+
+Scales of a different size are reported as containment rather than identity,
+with the `Match` column showing how many notes landed inside.
+
+`--edo-range MIN:MAX` sets the divisions searched (default `5:72`). An equal
+division only counts if every note lands on a **distinct** step, so a 12-note
+scale is never reported as fitting 5-EDO. **Fit** is the worst note's error as
+a fraction of half a step: 0 means exactly on the grid, about 0.5 means no
+better than chance. Ranking on that rather than on raw cents matters — absolute
+error always favours large divisions, so 53-EDO would beat 12-EDO on any scale
+whatsoever and the ranking would tell you nothing.
+
+### Comparing against the Scala archive
+
+`--reference PATH` sets what `--analyze` compares against, and accepts a
+directory of `.scl` files, a single `.scl` file, or a seed file. It defaults to
+`--seeds`. Pointed at the Scala archive it searches the whole thing:
+
+```bash
+python scale_search.py --notes 7 --metric "barlow:1,propriety:1" \
+    --analyze --reference ~/scala/scl
+```
+
+```
+Closest scales in ~/scala/scl:  [4483 scales (17 non-octave, 4 too large skipped)]
+
+   Max dev     RMS   Match  File                 Name
+  --------  ------  ------  -------------------  ------------------------------
+      0.0c    0.0c   7/7    ptolemy_diat.scl     Ptolemy's intense diatonic  (identical)
+     15.6c    9.2c   7/7    12edo.scl            12-tone equal temperament  (within 12-note scale)
+```
+
+Around two seconds for four and a half thousand files, parsing included.
+
+The filename is shown separately from the description, since in the archive it
+is the identifier you would use to find the scale again and descriptions are
+neither unique nor always present. Paths stay relative to the directory given,
+so nested layouts remain legible. The column is omitted when the source is a
+seed file, where every scale would carry the same filename.
+
+The `.scl` format needs a real parser rather than the seed-file reader, which
+gets three things wrong on it. The second meaningful line is a **note count**,
+not a pitch — read as a pitch, a three-note scale contributes a spurious 3/1.
+Pitches may be written in **cents**, marked by a decimal point, which the seed
+reader skips, silently emptying the many archive files written that way. And the
+scale's **name** is the description line, not a comment.
+
+Two kinds of file are set aside, both reported in the count:
+
+- **Non-octave scales** (Bohlen-Pierce and similar). Everything here compares
+  pitch classes under octave equivalence, so octave-reducing a tritave scale and
+  then reporting it as a close match would mislead rather than merely
+  approximate. `--include-non-octave` loads them anyway.
+- **Very large scales**, which cost time proportional to the square of their size
+  and say little when matched against seven notes.
+
+Cents are converted to ratios with a denominator limit of 10^6, an error far
+below a thousandth of a cent — a `.scl` file holding 12-EDO in cents round-trips
+to a perfect 12-EDO fit.
+
+`--analyze` also works on a single `--compare` scale, which answers "what is
+this scale?":
+
+```bash
+python scale_search.py --compare "9/8,5/4,4/3,3/2,5/3,15/8" \
+    --reference ~/scala/scl --analyze
+```
+
+### Seeding from the Scala archive
+
+The [Scala Archive](https://www.huygens-fokker.org/microtonality/scales.html) inclues over 5350 scales.
+
+`--seeds` accepts the same sources as `--reference`, so the archive can supply
+starting points as well as comparisons:
+
+```bash
+python scale_search.py --notes 7 --metric "barlow:1,propriety:1" \
+    --seeds ~/scala/scl --ratio-limit 32
+```
+
+```
+Loaded 4483 scales from ~/scala/scl; 775 usable as seeds, keeping best 50.
+  Skipped: 3389 wrong size (need 7 notes), 336 outside ratio limit 32
+  Best seed: ptolemy_diat.scl (quality 0.9933)
+```
+
+An archive holds thousands of scales and a population holds tens, so this
+selects rather than loads, in three steps:
+
+1. **Size.** The search has always accepted wrong-sized seeds and trimmed or
+   extended them, so near misses are passed through for it to resize as usual;
+   right-sized scales are simply ranked ahead of them, since a resized seed has
+   had notes invented or discarded at random and carries less of the original
+   than its score suggests. Scales far from the target are dropped — extending a
+   5-note scale to 24 means inventing 19 notes, which is a random scale with
+   five anchors, and scoring thousands of such candidates costs more than it
+   returns. The accepted band is the target plus or minus a quarter of it, and
+   the counts are reported both ways.
+2. **Snapping.** Every pitch is moved to the nearest ratio the search can
+   express. Roughly half the archive is written in cents, which converts
+   faithfully to ratios like `720009/679598` — exact enough to measure against,
+   but meaningless to mutate. Within 20 cents the *simplest* candidate wins
+   rather than the closest: the nearest ratio to a 400-cent third under a limit
+   of 32 is 29/23, which is a worse seed than 5/4 despite being 13 cents nearer.
+   A cents-written 12-EDO file snaps to `15/14, 9/8, 6/5, 5/4, 4/3, 7/5, 3/2,
+   8/5, 5/3, 9/5, 15/8`. Scales already written in ratios inside the limit pass
+   through unchanged.
+3. **Scoring.** What survives is evaluated and the best kept, since a seed only
+   earns a population slot if it beats random initialisation.
+
+`--max-seeds N` sets how many to keep (default 50), capped at `--population`.
+
+In testing the gain was small — about 0.0003 on a 12-note search — so treat this
+as a way to start somewhere musically real rather than as a way to get better
+scores.
+
 ## Seed File
 
 Specify a seed file with `--seeds`
@@ -388,6 +534,7 @@ Use `--json` for machine-readable output (includes quality, scale ratios, cents,
 - Metric can also be used with negative value.
 - You can use `--compare` in conjunction with `--notes` or `--include` to only compare scales that have the specified note count or notes.
 - With `--groups` that have higher note count, use a strict `--combine` (`logloss` or `worst`). Sub-scale scores are combined the same way as intervals, so with `mean` one unplayable sub-scale disappears into the average.
+- `propriety` tends to game the system. Use carefully.
 
 ## License
 

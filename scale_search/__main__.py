@@ -6,14 +6,19 @@ import random
 import argparse
 
 from scale_search.config import SearchConfig, validate_combine_method, COMBINE_METHODS
-from scale_search.util import parse_ratios
+import math
+import os
+from scale_search.util import (parse_ratios, generate_candidate_ratios,
+                               snap_to_candidates)
 from scale_search.metrics import (
     CONSONANCE_METRICS, SCALE_METRICS,
     parse_metrics, get_normalization, init_normalization,
     format_metric_description,
 )
-from scale_search.evolution import evolve, slots_to_pitches
+from scale_search.evolution import evolve, slots_to_pitches, evaluate_scale
 from scale_search.groups import parse_group_spec, describe_structures
+from scale_search.analysis import nearest_scales, edo_fits
+from scale_search.scala import load_reference_scales
 from scale_search.display import (
     load_seed_scales, find_matching_seed,
     format_scale, print_interval_matrix,
@@ -122,6 +127,24 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
                              "pitch. Use when slot numbers mean something (chromatic "
                              "steps, scale degrees); leave off for polytopes, where "
                              "the numbering is arbitrary.")
+    parser.add_argument("--analyze", action="store_true",
+                        help="After searching, report which scales in --seeds the "
+                             "result resembles (in cents, modes included) and which "
+                             "equal divisions it sits on")
+    parser.add_argument("--max-seeds", type=int, default=50, metavar="N",
+                        help="With --seeds pointing at a Scala archive: how many of "
+                             "the best-scoring matching scales to seed with "
+                             "(default: 50)")
+    parser.add_argument("--reference", type=str, default=None, metavar="PATH",
+                        help="Library for --analyze to compare against: a directory "
+                             "of .scl files (e.g. the Scala archive), a single .scl "
+                             "file, or a seed file. Defaults to --seeds.")
+    parser.add_argument("--include-non-octave", action="store_true",
+                        help="With --reference: also load scales that don't repeat "
+                             "at the octave (Bohlen-Pierce and similar). Excluded by "
+                             "default, since comparison is under octave equivalence.")
+    parser.add_argument("--edo-range", type=str, default="5:72", metavar="MIN:MAX",
+                        help="EDO range searched by --analyze (default: 5:72)")
     parser.add_argument("--list-groups", action="store_true",
                         help="List available group structures and exit")
     parser.add_argument("--export-groups", type=str, default=None, metavar="FILE",
@@ -252,9 +275,13 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
     seed_scales = None
     seed_names = None
     if args.seeds:
-        seed_scales, seed_names = load_seed_scales(args.seeds, with_names=True)
-        if seed_scales and verbose:
-            print(f"Loaded {len(seed_scales)} seed scales from {args.seeds}")
+        if os.path.isdir(args.seeds) or args.seeds.lower().endswith('.scl'):
+            seed_scales, seed_names = _seeds_from_archive(args.seeds, config,
+                                                          args, verbose)
+        else:
+            seed_scales, seed_names = load_seed_scales(args.seeds, with_names=True)
+            if seed_scales and verbose:
+                print(f"Loaded {len(seed_scales)} seed scales from {args.seeds}")
     
     # Build descriptions
     metric_desc = format_metric_description(metrics, scale_metrics, edo)
@@ -338,6 +365,9 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
         print(f"Intervals evaluated: {details['num_intervals']} (across {octave_desc})")
     
     # Check if this scale matches a seed
+    if args.analyze:
+        _print_analysis(scale, seed_scales, seed_names, args)
+
     if seed_scales:
         match_idx, match_name = find_matching_seed(scale, seed_scales, seed_names)
         if match_idx >= 0:
@@ -565,6 +595,236 @@ def _print_incompatible_pairs(scale, structure, verbose):
         print(f"{lead}: {parts}")
 
 
+def _seeds_from_archive(path, config, args, verbose):
+    """
+    Draw seeds from a Scala archive directory or .scl file.
+
+    An archive holds thousands of scales and a population holds tens, so this
+    has to select rather than load. Three steps, in order of how much they
+    discard:
+
+      1. Keep scales of a usable size. Exact matches are preferred, but the
+         search has always accepted wrong-sized seeds and trimmed or extended
+         them, so near misses are passed through for it to resize as usual.
+         Scales far from the target are dropped: extending a 5-note scale to 24
+         means inventing 19 notes, which is a random scale with five anchors,
+         and scoring thousands of such candidates costs more than it returns.
+      2. Snap every pitch to a ratio the search can express. Much of the
+         archive is written in cents, which converts faithfully to ratios like
+         720009/679598 — fine to measure against, meaningless to mutate. This
+         also rescues rational scales whose ratios exceed the complexity limit.
+      3. Score what survives and keep the best, since a seed is only worth a
+         population slot if it beats what random initialisation would give.
+    """
+    scales, names, files, stats = load_reference_scales(
+        path, octave_only=not args.include_non_octave)
+    if not scales:
+        if verbose:
+            print(f"No usable scales found in {path}")
+        return None, None
+
+    if config.fixed_notes is not None:
+        target_lo = target_hi = config.fixed_notes
+    else:
+        target_lo, target_hi = config.min_notes, config.max_notes
+    # How far from the target a scale may sit and still be worth resizing
+    slack = max(2, target_hi // 4)
+    band_lo, band_hi = max(2, target_lo - slack), target_hi + slack
+    size_desc = (f"{target_lo} notes" if target_lo == target_hi
+                 else f"{target_lo}-{target_hi} notes")
+
+    candidates, _ = generate_candidate_ratios(config.ratio_limit)
+    candidates = sorted(candidates, key=float)
+    cand_cents = [1200.0 * math.log2(float(c)) for c in candidates]
+
+    kept, wrong_size, unsnappable, failed_constraints = [], 0, 0, 0
+    n_exact = 0
+    seen = set()
+    for ratios, name, fn in zip(scales, names, files):
+        notes = len(ratios) + 1
+        if not (band_lo <= notes <= band_hi):
+            wrong_size += 1
+            continue
+        snapped = snap_to_candidates(ratios, candidates, cand_cents)
+        if snapped is None:
+            unsnappable += 1
+            continue
+        if not config.check_constraints(snapped):
+            failed_constraints += 1
+            continue
+        key = tuple((r.numerator, r.denominator) for r in snapped)
+        if key in seen:
+            continue
+        seen.add(key)
+        exact = target_lo <= notes <= target_hi
+        n_exact += exact
+        kept.append((snapped, name, fn, exact))
+
+    if not kept:
+        if verbose:
+            print(f"No scales in {path} usable as seeds "
+                  f"({stats['loaded']} loaded, none with {size_desc} "
+                  f"that fit ratio limit {config.ratio_limit}).")
+        return None, None
+
+    scored = []
+    interval_cache = {}
+    for snapped, name, fn, exact in kept:
+        fitness, _ = evaluate_scale(snapped, config.metrics,
+                                    config.octave_range, interval_cache,
+                                    config.scale_metrics, config.edo,
+                                    config.combine_method)
+        scored.append((fitness, snapped, name, fn, exact))
+    # Right-sized scales first: a resized seed has had notes invented or
+    # discarded at random, so it carries less of the original scale than its
+    # score suggests.
+    scored.sort(key=lambda x: (not x[4], -x[0]))
+    # Seeds are added to the population before it is filled out with random
+    # scales, so asking for more than the population size would silently grow
+    # the population past what was requested and leave no room for fresh blood.
+    cap = max(1, min(args.max_seeds, config.population_size))
+    chosen = scored[:cap]
+
+    if verbose:
+        capped = (" (capped by --population)"
+                  if args.max_seeds > config.population_size
+                  and len(kept) > cap else "")
+        print(f"Loaded {stats['loaded']} scales from {path}; "
+              f"{len(kept)} usable as seeds, keeping best {len(chosen)}{capped}.")
+        n_resized = len(chosen) - sum(1 for c in chosen if c[4])
+        if n_resized:
+            print(f"  {len(chosen) - n_resized} at {size_desc}, "
+                  f"{n_resized} to be resized by the search "
+                  f"(from {band_lo}-{band_hi} notes)")
+        reasons = []
+        if wrong_size:
+            reasons.append(f"{wrong_size} outside {band_lo}-{band_hi} notes")
+        if unsnappable:
+            reasons.append(f"{unsnappable} outside ratio limit "
+                           f"{config.ratio_limit}")
+        if failed_constraints:
+            reasons.append(f"{failed_constraints} failed include/exclude")
+        if reasons:
+            print(f"  Skipped: {', '.join(reasons)}")
+        best = chosen[0]
+        label = best[3] or best[2]
+        print(f"  Best seed: {label} (quality {best[0]:.4f})")
+
+    return [c[1] for c in chosen], [c[3] or c[2] for c in chosen]
+
+
+def _print_analysis(scale, seed_scales, seed_names, args):
+    """Report what a result resembles: known scales, then equal divisions."""
+    try:
+        lo, _, hi = args.edo_range.partition(':')
+        min_edo, max_edo = int(lo), int(hi)
+        if min_edo < 2 or max_edo < min_edo:
+            raise ValueError
+    except ValueError:
+        print(f"Error: --edo-range must be MIN:MAX with 2 <= MIN <= MAX, "
+              f"got '{args.edo_range}'")
+        return
+
+    print()
+    print("=" * 60)
+    print("ANALYSIS")
+    print("=" * 60)
+
+    if args.reference:
+        ref_scales, ref_names, ref_files, stats = load_reference_scales(
+            args.reference, octave_only=not args.include_non_octave)
+        source = args.reference
+        skipped = []
+        if stats['unparsed']:
+            skipped.append(f"{stats['unparsed']} unreadable")
+        if stats['non_octave']:
+            skipped.append(f"{stats['non_octave']} non-octave")
+        if stats['too_large']:
+            skipped.append(f"{stats['too_large']} too large")
+        note = f" ({', '.join(skipped)} skipped)" if skipped else ""
+        loaded_note = f"  [{stats['loaded']} scales{note}]"
+    else:
+        ref_scales, ref_names = seed_scales, seed_names
+        ref_files = None
+        source = args.seeds
+        loaded_note = ""
+
+    if ref_scales:
+        matches = nearest_scales(scale, ref_scales, ref_names, top=5,
+                                 sources=ref_files)
+        print()
+        print(f"Closest scales in {source}:{loaded_note}")
+        print()
+        if not matches:
+            print("  Nothing comparable.")
+        else:
+            # The file column goes before the description: filenames are the
+            # archive's identifier and are short and uniform, while
+            # descriptions vary wildly in length, so putting the variable
+            # column last keeps the table aligned.
+            show_files = any(m.get('source') for m in matches)
+            fw = (max(len(m['source'] or '') for m in matches)
+                  if show_files else 0)
+            fw = min(max(fw, 4), 30)
+
+            header = f"  {'Max dev':>8s}  {'RMS':>6s}  {'Match':>6s}  "
+            rule = f"  {'-'*8}  {'-'*6}  {'-'*6}  "
+            if show_files:
+                header += f"{'File':<{fw}s}  "
+                rule += f"{'-'*fw}  "
+            print(header + "Name")
+            print(rule + '-' * 30)
+
+            for m in matches:
+                tags = []
+                if m['same_length']:
+                    if m['exact']:
+                        tags.append('identical')
+                    # The mode matters even for an identical match: it says the
+                    # result is that scale started from a different degree.
+                    if m['mode']:
+                        tags.append(f"mode {m['mode']}")
+                else:
+                    tags.append(f"within {m['notes']}-note scale")
+                    if m['mode']:
+                        tags.append(f"mode {m['mode']}")
+                tag = f"  ({', '.join(tags)})" if tags else ""
+
+                row = (f"  {m['max_dev']:7.1f}c  {m['rms']:5.1f}c  "
+                       f"{m['matched']:>2d}/{m['total']:<3d}  ")
+                if show_files:
+                    src = m['source'] or ''
+                    if len(src) > fw:
+                        src = '...' + src[-(fw - 3):]
+                    row += f"{src:<{fw}s}  "
+                print(row + m['name'][:40] + tag)
+    else:
+        print()
+        print("Nothing to compare against — give --reference PATH (a directory "
+              "of .scl\nfiles, an .scl file, or a seed file) or --seeds FILE.")
+
+    fits = edo_fits(scale, min_edo, max_edo, top=5)
+    print()
+    print("Best equal divisions:")
+    print()
+    if not fits:
+        print(f"  None in {min_edo}-{max_edo}: every division would put two notes "
+              f"on the same step.")
+    else:
+        print(f"  {'EDO':>4s}  {'Fit':>5s}  {'Max dev':>8s}  Steps")
+        print(f"  {'-'*4}  {'-'*5}  {'-'*8}  {'-'*38}")
+        for f in fits:
+            steps = ' '.join(str(x) for x in f['steps'])
+            if len(steps) > 38:
+                steps = steps[:35] + '...'
+            print(f"  {f['edo']:>4d}  {f['rel']:5.2f}  {f['max_dev']:7.1f}c  {steps}")
+        print()
+        print("  Fit is the worst note's error as a fraction of half a step:")
+        print("  0 = exactly on the grid, ~0.5 = no better than chance. Ranking on")
+        print("  this rather than on cents keeps large divisions from winning by")
+        print("  default just for having finer steps.")
+
+
 def _handle_compare(args, metrics, scale_metrics, edo):
     """Handle --compare mode: evaluate scales and display ranked results."""
     verbose = not args.quiet
@@ -647,6 +907,14 @@ def _handle_compare(args, metrics, scale_metrics, edo):
     
     # Sort by quality descending
     results.sort(key=lambda x: x[1], reverse=True)
+    
+    # With a single scale, --analyze answers "what is this?" -- but only if the
+    # comparison set isn't itself the seed file, where every scale would
+    # trivially match itself.
+    if args.analyze and len(results) == 1 and args.compare is not True:
+        seeds, seed_names = ((None, None) if not args.seeds
+                             else load_seed_scales(args.seeds, with_names=True))
+        _print_analysis(results[0][3], seeds, seed_names, args)
     
     # Print detailed output for each scale (in ranked order) if verbose
     if verbose and len(results) > 1:

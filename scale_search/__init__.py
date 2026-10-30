@@ -35,6 +35,12 @@ from scale_search.evolution import (
     evaluate_scale, evolve, combine_penalties,
     evaluate_grouped_scale, subscale_of, slots_to_pitches,
 )
+from scale_search.analysis import (
+    scale_cents, compare_scales, nearest_scales, edo_fits,
+)
+from scale_search.scala import (
+    ScalaScale, parse_scl, load_scala_archive, load_reference_scales,
+)
 from scale_search.groups import (
     BUILTIN_STRUCTURES, GroupStructure, parse_group_spec, describe_structures,
 )
@@ -51,6 +57,8 @@ __all__ = [
     'CONSONANCE_METRICS', 'SCALE_METRICS',
     'evolve', 'evaluate_scale', 'combine_penalties',
     'evaluate_grouped_scale', 'subscale_of', 'slots_to_pitches',
+    'scale_cents', 'compare_scales', 'nearest_scales', 'edo_fits',
+    'ScalaScale', 'parse_scl', 'load_scala_archive', 'load_reference_scales',
     'BUILTIN_STRUCTURES', 'GroupStructure', 'parse_group_spec', 'describe_structures',
     'init_normalization', 'parse_metrics',
     'format_scale', 'load_seed_scales',

@@ -13,3 +13,6 @@ htmlcov/
 nosetests.xml
 coverage.xml
 *.cover
+
+# Scala Archive
+scl/

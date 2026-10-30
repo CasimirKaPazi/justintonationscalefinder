@@ -552,7 +552,9 @@ The tool outputs:
 - The best scale found (ratios)
 - Quality score (0-1, higher = better)
 - Interval matrix showing pairwise consonance
-- Metric breakdown when using multiple metrics
+- Metric breakdown when using multiple metrics: for interval metrics, how each interval
+  ranks among all candidate ratios, averaged over every interval scored (the same
+  numbers the search works with); for scale metrics, their value on a fixed 0-1 range
 - Match notification if result equals a seed scale
 - Elapsed time and ETA during search
 

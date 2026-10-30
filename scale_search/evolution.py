@@ -274,6 +274,10 @@ def evaluate_scale(scale: List[Fraction],
         'metrics': metrics,
         'scale_metrics': scale_metrics,
         'metric_averages': metric_avgs,
+        # Raw value of each interval metric for every interval scored, in the
+        # same order as the scoring loop. Already computed above, so passing
+        # the lists on costs nothing; the metric breakdown reads them.
+        'metric_values': individual_scores,
         'num_intervals': len(interval_scores),
         'octave_range': octave_range,
         'edo': edo,

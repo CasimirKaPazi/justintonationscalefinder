@@ -6,7 +6,7 @@ from typing import List, Optional, Tuple
 
 from scale_search.util import sanitize_scale, interval_between
 from scale_search.metrics import (
-    combined_metric, get_normalization, format_metric_description,
+    combined_metric, get_normalization, quantile_normalize, format_metric_description,
 )
 from scale_search.evolution import evaluate_scale
 
@@ -260,13 +260,32 @@ def metric_breakdown(details: dict, metrics: List[Tuple[str, float]],
     Per-metric quality (0-1, higher = better) for display, as
     (label, quality, weight) triples.
 
-    Interval metrics are shown by their average over all intervals, min-max
-    normalized; scale metrics by their value for the whole scale. The quality
-    shown is the metric's own, whatever the sign of its weight — a negatively
-    weighted metric is one the search was asked to make worse.
+    Interval metrics are shown the way the search scores them: each interval
+    is ranked among all candidate ratios under the ratio limit (0 = best
+    possible, 1 = worst), and the quality is one minus the average rank over
+    every interval evaluated, across all octaves. The breakdown used to place
+    the metric's average raw value on a straight line between the best and
+    worst candidate instead, which for skewed metrics told a different story
+    than the one the search acted on — Tenney looked like a weak point of the
+    Ptolemaic major scale (0.74) while the search saw it as nearly perfect.
+
+    Scale metrics have no candidate population to rank against, so they are
+    shown by their value for the whole scale on a fixed range, as the search
+    also uses them.
+
+    The quality shown is the metric's own, whatever the sign of its weight —
+    a negatively weighted metric is one the search was asked to make worse.
     """
+    values = details.get('metric_values', {})
     rows = []
-    for name, weight in metrics + scale_metrics:
+    for name, weight in metrics:
+        per_interval = values.get(name)
+        if per_interval:
+            rank = sum(quantile_normalize(v, name) for v in per_interval) / len(per_interval)
+        else:
+            rank = quantile_normalize(details['metric_averages'].get(name, 0), name)
+        rows.append((name, 1.0 - rank, weight))
+    for name, weight in scale_metrics:
         raw = details['metric_averages'].get(name, 0)
         lo, hi = get_normalization(name)
         norm = max(0.0, min(1.0, (raw - lo) / (hi - lo))) if hi > lo else 0.0

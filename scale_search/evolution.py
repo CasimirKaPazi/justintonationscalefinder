@@ -25,9 +25,13 @@ __all__ = [
     'evaluate_grouped_scale', 'subscale_of', 'slots_to_pitches',
 ]
 
-def combine_penalties(penalties: List[float], combine_method: str = 'geometric') -> float:
+def combine_penalties(penalties: List[float], combine_method: str = 'geometric',
+                      counts: List[int] = None) -> float:
     """
     Combine a list of penalty scores (0-1, lower = better) into one penalty.
+
+    counts, if given, says how many times each penalty occurs: the result is
+    the same as for the list with every penalty repeated that often.
     
     Used both for combining interval scores within a scale and for combining
     sub-scale scores in grouped mode, so 'logloss' or 'worst' means the same
@@ -42,6 +46,9 @@ def combine_penalties(penalties: List[float], combine_method: str = 'geometric')
     """
     if not penalties:
         return 0.0
+    if counts is None:
+        counts = [1] * len(penalties)
+    total = sum(counts)
     
     if combine_method == 'worst':
         # Minimax: the worst member determines the score
@@ -50,9 +57,9 @@ def combine_penalties(penalties: List[float], combine_method: str = 'geometric')
     if combine_method == 'geometric':
         # Geometric mean: one bad member pulls down the whole score
         # Clamp to avoid log(0)
-        clamped = [max(0.001, min(0.999, s)) for s in penalties]
-        log_sum = sum(math.log(s) for s in clamped)
-        return math.exp(log_sum / len(clamped))
+        log_sum = sum(c * math.log(max(0.001, min(0.999, s)))
+                      for s, c in zip(penalties, counts))
+        return math.exp(log_sum / total)
     
     if combine_method.startswith('power'):
         # Power mean: (1/n * sum(x^p))^(1/p)
@@ -63,26 +70,118 @@ def combine_penalties(penalties: List[float], combine_method: str = 'geometric')
         except ValueError:
             p = 2
         p = max(1, min(10, p))  # Clamp to reasonable range
-        clamped = [max(0.001, s) for s in penalties]
-        power_sum = sum(s ** p for s in clamped)
-        return (power_sum / len(clamped)) ** (1 / p)
+        power_sum = sum(c * max(0.001, s) ** p for s, c in zip(penalties, counts))
+        return (power_sum / total) ** (1 / p)
     
     if combine_method == 'logloss':
         # Log loss: heavily penalizes near-dissonant members
         # -log(1-p) grows unboundedly as p approaches 1
         # Compute mean log loss then squash back to [0,1)
-        clamped = [min(0.999, s) for s in penalties]
-        log_loss_raw = sum(-math.log(1 - s) for s in clamped) / len(clamped)
+        log_loss_raw = sum(-c * math.log(1 - min(0.999, s))
+                           for s, c in zip(penalties, counts)) / total
         return 1 - math.exp(-log_loss_raw)
     
     if combine_method == 'mean':
-        return sum(penalties) / len(penalties)
+        return sum(c * s for s, c in zip(penalties, counts)) / total
 
     # No silent fallback: an unrecognized name means the caller asked for
     # something they aren't getting. validate_combine_method raises with a
     # did-you-mean hint; it only returns for names handled above.
     validate_combine_method(combine_method)
     raise ValueError(f"Unknown combine method '{combine_method}'")
+
+
+def _instance_counts(octave_range: int) -> Tuple[int, int, int, int, int, int]:
+    """
+    How often each kind of interval occurs when the scale is laid out over
+    2R+1 octaves (R = octave_range), as (up, down, tonic_up, tonic_down,
+    unisons_per_note, tonic_unisons) -- see _interval_classes.
+    """
+    n = 2 * octave_range + 1   # copies of each note: octaves -R..R
+    m = n + 1                  # copies of the tonic: 2/1 adds one at the top
+    up = n * (n + 1) // 2      # pairs where the higher note's copy is not lower
+    return up, n * n - up, up, m * n - up, n * (n - 1) // 2, m * (m - 1) // 2
+
+
+def _interval_classes(scale: List[Fraction], octave_range: int) -> List[Tuple[Tuple[int, int], int]]:
+    """
+    Every interval between two notes of the scale laid out over several
+    octaves, octave-reduced, as ((n, d), count) pairs.
+
+    The scale is scored over 2R+1 octaves: each note appears once per octave,
+    the tonic once more at the top (from 2/1), and every pair of these copies
+    is an interval. Reduced to the octave, the pair (p, q) with p < q only
+    ever gives q/p (when q's copy is the higher one) or 2p/q (when p's is),
+    and how often each occurs depends only on R. So instead of reducing
+    every pair of copies -- 2628 of them for a 24-note scale over 3 octaves,
+    which took most of the running time of a large grouped search -- each
+    pair of notes is reduced once and given its count. The multiset of
+    intervals is exactly the same.
+
+    Notes are expected to lie strictly between 1/1 and 2/1, as everywhere in
+    the search; anything else is laid out copy by copy, as before.
+    """
+    # Integer pairs throughout: comparing Fractions was a noticeable share of
+    # the running time once the pair loop had been shortened
+    nd = sorted(((r.numerator, r.denominator) for r in scale), key=lambda x: x[0] / x[1])
+    if any(not (d < n < 2 * d) for n, d in nd) or len(set(nd)) != len(nd):
+        return _interval_classes_by_copies(scale, octave_range)
+
+    up, down, t_up, t_down, unisons, t_unisons = _instance_counts(octave_range)
+    out = []
+    unison_count = t_unisons + unisons * len(nd)
+    if unison_count:
+        out.append(((1, 1), unison_count))
+    # Tonic against each note: q/1 upwards, 2/q downwards
+    for qn, qd in nd:
+        out.append(((qn, qd), t_up))
+        if t_down:
+            g = math.gcd(2 * qd, qn)
+            out.append(((2 * qd // g, qn // g), t_down))
+    # Every other pair p < q: q/p upwards, 2p/q downwards
+    for i in range(len(nd)):
+        pn, pd = nd[i]
+        for j in range(i + 1, len(nd)):
+            qn, qd = nd[j]
+            a, b = qn * pd, qd * pn          # q/p, between 1 and 2
+            g = math.gcd(a, b)
+            out.append(((a // g, b // g), up))
+            if down:
+                a, b = 2 * pn * qd, pd * qn  # 2p/q, between 1 and 2
+                g = math.gcd(a, b)
+                out.append(((a // g, b // g), down))
+    return out
+
+
+def _interval_classes_by_copies(scale: List[Fraction],
+                                octave_range: int) -> List[Tuple[Tuple[int, int], int]]:
+    """The direct way: lay out every copy of every note and reduce each pair."""
+    base_scale = [Fraction(1, 1)] + sorted(scale) + [Fraction(2, 1)]
+    full_scale = set()
+    for octave_shift in range(-octave_range, octave_range + 1):
+        mult_n = 2 ** max(0, octave_shift)
+        mult_d = 2 ** max(0, -octave_shift)
+        for note in base_scale:
+            n = note.numerator * mult_n
+            d = note.denominator * mult_d
+            g = math.gcd(n, d)
+            full_scale.add((n // g, d // g))
+    full_scale = sorted(full_scale, key=lambda x: x[0] / x[1])
+    out = []
+    for i in range(len(full_scale)):
+        n1, d1 = full_scale[i]
+        for j in range(i + 1, len(full_scale)):
+            n2, d2 = full_scale[j]
+            int_n, int_d = n2 * d1, d2 * n1
+            g = math.gcd(int_n, int_d)
+            int_n, int_d = int_n // g, int_d // g
+            while int_n >= 2 * int_d:
+                int_d *= 2
+            while int_n < int_d:
+                int_n *= 2
+            g = math.gcd(int_n, int_d)
+            out.append(((int_n // g, int_d // g), 1))
+    return out
 
 
 def evaluate_scale(scale: List[Fraction],
@@ -121,69 +220,30 @@ def evaluate_scale(scale: List[Fraction],
         scale_metrics = []
     metric_names = [name for name, _ in metrics]
     
-    # Build full scale across octaves
-    base_scale = [Fraction(1, 1)] + sorted(scale) + [Fraction(2, 1)]
-    # With no interval metrics (possible at the whole-scale level of a grouped
-    # search) there is nothing to score per interval, so skip building them
-    if not metrics:
-        base_scale = []
-    
-    # Extend to multiple octaves - use tuples for speed
-    full_scale = []
-    for octave_shift in range(-octave_range, octave_range + 1):
-        mult_n = 2 ** max(0, octave_shift)
-        mult_d = 2 ** max(0, -octave_shift)
-        for note in base_scale:
-            n = note.numerator * mult_n
-            d = note.denominator * mult_d
-            g = math.gcd(n, d)
-            full_scale.append((n // g, d // g))
-    
-    # Remove duplicates and sort by value
-    full_scale = sorted(set(full_scale), key=lambda x: x[0] / x[1])
-    
     interval_scores = []
+    interval_counts = []
     individual_scores = {name: [] for name, _ in metrics}
     
-    # Compute all pairwise intervals
-    for i in range(len(full_scale)):
-        n1, d1 = full_scale[i]
-        for j in range(i + 1, len(full_scale)):
-            n2, d2 = full_scale[j]
-            
-            # Compute interval key directly (faster than using Fraction)
-            int_n = n2 * d1
-            int_d = d2 * n1
-            g = math.gcd(int_n, int_d)
-            int_n, int_d = int_n // g, int_d // g
-            
-            # Reduce to single octave (GCD once at the end)
-            while int_n >= 2 * int_d:
-                int_d *= 2
-            while int_n < int_d:
-                int_n *= 2
-            g = math.gcd(int_n, int_d)
-            int_n, int_d = int_n // g, int_d // g
-            
-            # Combined score: from the per-search cache if given, else computed
-            score = None
+    # Every interval class with the number of times it occurs (see
+    # _interval_classes); none at all without interval metrics, which is
+    # possible at the whole-scale level of a grouped search
+    classes = _interval_classes(scale, octave_range) if metrics else []
+    for (int_n, int_d), count in classes:
+        # Combined score: from the per-search cache if given, else computed
+        score = None
+        if interval_cache is not None:
+            score = interval_cache.get((int_n, int_d))
+        if score is None:
+            score = combined_metric(Fraction(int_n, int_d), metrics, normalize=True)
             if interval_cache is not None:
-                score = interval_cache.get((int_n, int_d))
-            if score is None:
-                score = combined_metric(Fraction(int_n, int_d), metrics, normalize=True)
-                if interval_cache is not None:
-                    interval_cache[(int_n, int_d)] = score
-            interval_scores.append(score)
-
-            # Raw per-metric values, for the breakdown and the fingerprint.
-            # These come from the module-level metric cache, so every interval
-            # is recorded whether or not its combined score was cached. (A
-            # second cache used to sit here and silently dropped values for
-            # cached intervals whenever it wasn't passed in.)
-            for name in metric_names:
-                individual_scores[name].append(cached_metric_nd(int_n, int_d, name))
+                interval_cache[(int_n, int_d)] = score
+        interval_scores.append(score)
+        interval_counts.append(count)
+        # Raw per-metric values, for the breakdown and the fingerprint
+        for name in metric_names:
+            individual_scores[name].append(cached_metric_nd(int_n, int_d, name))
     
-    raw_interval_penalty = combine_penalties(interval_scores, combine_method)
+    raw_interval_penalty = combine_penalties(interval_scores, combine_method, interval_counts)
     
     # Note count normalization:
     # 
@@ -255,7 +315,9 @@ def evaluate_scale(scale: List[Fraction],
     # Fitness = quality (higher = better, range 0-1)
     fitness = final_quality
     
-    metric_avgs = {name: sum(scores) / len(scores) if scores else 0 
+    num_intervals = sum(interval_counts)
+    metric_avgs = {name: sum(c * v for v, c in zip(scores, interval_counts)) / num_intervals
+                   if scores else 0
                    for name, scores in individual_scores.items()}
     metric_avgs.update(scale_metric_scores)
     
@@ -268,11 +330,11 @@ def evaluate_scale(scale: List[Fraction],
         'metrics': metrics,
         'scale_metrics': scale_metrics,
         'metric_averages': metric_avgs,
-        # Raw value of each interval metric for every interval scored, in the
-        # same order as the scoring loop. Already computed above, so passing
-        # the lists on costs nothing; the metric breakdown reads them.
+        # Raw value of each interval metric for every interval class scored,
+        # and how often each class occurs; the metric breakdown reads them
         'metric_values': individual_scores,
-        'num_intervals': len(interval_scores),
+        'interval_counts': interval_counts,
+        'num_intervals': num_intervals,
         'octave_range': octave_range,
         'edo': edo,
     }

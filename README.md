@@ -147,6 +147,45 @@ cross the octave. The Pythagorean diatonic is improper because its 4-step
 diminished fifth B–F (588 cents) is smaller than its 3-step augmented fourth F–B
 (612 cents), and B–F only exists by wrapping past the octave.
 
+#### What a weight costs
+
+Weights are not comparable between scale metrics: the same weight can cost
+nothing for one metric and a lot for another. The table shows how much
+consonance each scale metric costs at a given weight when added to `barlow`,
+as the drop in Barlow quality against Barlow alone (7 notes / 12 notes,
+average of 4 searches at 120 generations and population 150).
+
+| Added metric | 0.01 | 0.1 | 0.3 | 1 |
+|---|---|---|---|---|
+| `steps` | 0 / 0.0003 | 0 / 0.0010 | 0 / 0.0016 | 0 / 0.0015 |
+| `balance` | 0 / 0.0006 | 0.0065 / 0.0010 | 0.0064 / 0.0063 | 0.0153 / 0.0194 |
+| `variety` | 0 / 0 | 0.0017 / 0.0015 | 0.0032 / 0.0020 | 0.0052 / 0.0054 |
+| `primes` | 0.0041 / 0.0052 | 0.0208 / 0.0157 | 0.0381 / 0.0171 | 0.0411 / 0.0165 |
+| `edo12` | 0.0005 / 0.0001 | 0.0005 / 0.0020 | 0.0005 / 0.0091 | 0.0049 / 0.0150 |
+| `propriety` | 0 / 0.0002 | 0 / 0.0002 | 0 / 0.0002 | 0 / 0.0002 |
+
+For scale: with Barlow alone the best 7-note scale scores 0.9978 (Ptolemy's
+intense diatonic), the Pythagorean diatonic 0.9972, the septimal scale
+8/7, 7/6, 4/3, 3/2, 14/9, 7/4 0.9951, and harmonics 8–14 0.9904. A cost of
+0.005 is therefore about the step from the best 5-limit scale to a septimal
+one; 0.02 is far more than that.
+
+Reading the table:
+
+- `steps` and `propriety` are cheap where the most consonant scale already
+  satisfies them, as at 7 notes. At 12 notes propriety acts as a switch rather
+  than a weight (see [How propriety behaves](#how-propriety-behaves)).
+- `variety` and `balance` grow steadily with the weight; `balance` costs
+  three to four times as much as `variety` at the same weight.
+- `edo12` costs little at 7 notes, where 5-limit scales lie close to 12-EDO
+  anyway, and much more at 12 notes.
+- `primes` is expensive at every weight. A 5-limit scale scores 0 on it, the
+  lowest possible value, so even a small weight pushes strongly towards
+  higher primes. Use weights around 0.01, or `variety` instead.
+
+The numbers depend on the interval metric, the note count and the other
+settings, so treat them as orders of magnitude.
+
 ## Interval Combination Methods
 
 The `--combine` option controls how individual interval scores are combined (in order of strictness):
@@ -768,7 +807,6 @@ which is what is needed to find them on an instrument tuned to the file:
 - Metric can also be used with negative value.
 - You can use `--compare` in conjunction with `--notes` or `--include` to only compare scales that have the specified note count or notes.
 - With `--groups` that have higher note count, use a strict `--combine` (`logloss` or `worst`). Sub-scale scores are combined the same way as intervals, so with `mean` one unplayable sub-scale disappears into the average.
-- `propriety` tends to game the system. Use carefully.
 
 ## Testing
 

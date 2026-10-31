@@ -266,7 +266,8 @@ def metric_breakdown(details: dict, metrics: List[Tuple[str, float]],
     Interval metrics are shown the way the search scores them: each interval
     is ranked among all candidate ratios under the ratio limit (0 = best
     possible, 1 = worst), and the quality is one minus the average rank over
-    every interval evaluated, across all octaves. The breakdown used to place
+    every interval evaluated, across all octaves (each interval class counted
+    as often as it occurs). The breakdown used to place
     the metric's average raw value on a straight line between the best and
     worst candidate instead, which for skewed metrics told a different story
     than the one the search acted on — Tenney looked like a weak point of the
@@ -283,7 +284,9 @@ def metric_breakdown(details: dict, metrics: List[Tuple[str, float]],
     for name, weight in metrics:
         per_interval = values.get(name)
         if per_interval:
-            rank = sum(quantile_normalize(v, name) for v in per_interval) / len(per_interval)
+            counts = details.get('interval_counts') or [1] * len(per_interval)
+            rank = (sum(c * quantile_normalize(v, name) for v, c in zip(per_interval, counts))
+                    / sum(counts))
         else:
             rank = quantile_normalize(details['metric_averages'].get(name, 0), name)
         rows.append((name, 1.0 - rank, weight))

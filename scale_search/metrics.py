@@ -25,6 +25,7 @@ __all__ = [
     'scale_balance', 'scale_propriety', 'scale_variety',
     # Normalization
     'init_normalization', 'get_normalization', 'quantile_normalize',
+    'scale_metric_quality',
     # Caching
     'combined_metric', 'cached_metric', 'clear_metric_cache',
     # Parsing and formatting
@@ -592,7 +593,7 @@ _SCALE_METRIC_NORMALIZATION = {
     'steps': (0.0, 0.5),        # 0 = no close steps, 0.5 = very clustered
     'primes': (0.0, 0.5),       # sum(1/p): 0=5-limit, 0.31=13-limit, 0.42=19-limit
     'balance': (0.0, 1.0),      # 0 = even steps, 1 = very uneven
-    'propriety': (0.0, 1.0),    # 0 = proper, higher = more improper
+    'propriety': (0.0, 1.0),    # Not used for scoring: see scale_metric_quality
     'variety': (0.0, 1.0),      # 0 = all intervals cluster, 1 = all perceptually distinct
     'edo': (0.0, 1.0),          # 0 = on EDO steps, 1 = at midpoints
 }
@@ -658,6 +659,32 @@ def init_normalization(ratio_limit: int, verbose: bool = False):
 def get_normalization(metric_name: str) -> Tuple[float, float]:
     """Get the min/max normalization range for a metric."""
     return _normalization.get(metric_name, (0.0, 1.0))
+
+
+def scale_metric_quality(metric_name: str, raw: float) -> float:
+    """
+    A scale metric's raw value as a quality, 0-1, higher = better, before
+    any inversion for a negative weight.
+
+    Most scale metrics are placed on a fixed range and clamped. Propriety is
+    mapped smoothly instead, as 1 / (1 + overlap in semitones), because on a
+    range it behaved like a cliff: a random 12-note scale overlaps by about 3
+    semitones, so nearly all improper scales were clamped to the floor, and a
+    scale or sub-scale reaching one semitone lost almost all of its score at
+    once. In grouped search, where not every sub-scale can be proper, this
+    made the search give up a lot of consonance merely to keep sub-scales off
+    the floor (dodecahedron, soft_tenney:1,propriety:0.5,variety:0.3:
+    sub-scale consonance 0.953 instead of 0.991 without propriety, with 42% of
+    faces proper; mapped smoothly: 0.980, with 44% proper). Near properness
+    the two agree (overlap 0.1 gives 0.90 on the range and 0.91 smoothly).
+    """
+    if metric_name == 'propriety':
+        return 1.0 / (1.0 + max(0.0, raw))
+    lo, hi = get_normalization(metric_name)
+    norm = max(0.0, min(1.0, (raw - lo) / (hi - lo))) if hi > lo else 0.0
+    # 'primes' and 'variety' are already positive (more = better); the
+    # others are penalties (lower = better), so invert
+    return norm if metric_name in ('primes', 'variety') else 1.0 - norm
 
 
 def quantile_normalize(value: float, metric_name: str) -> float:

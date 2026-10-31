@@ -148,6 +148,39 @@ def mutate_mediant(note1: Fraction, note2: Fraction, limit: int) -> Fraction:
     return None
 
 
+def mutate_relative(scale: List[Fraction], idx: int, config: SearchConfig) -> Fraction:
+    """
+    Move the note at idx to a simple interval from another note: in grouped
+    search, a note sharing a sub-scale with it; otherwise any note of the
+    scale, the tonic included.
+
+    The other mutations build new notes relative to the tonic (combine, stack,
+    random candidates) or relative to the note's own old position (transpose).
+    None of them proposes a note that is simple relative to its neighbours,
+    and in grouped search that left sub-scales away from 1/1 clearly worse
+    than those containing it, although on a regular polytope every vertex is
+    equivalent.
+    """
+    if config.groups:
+        slot = idx + 1  # genome index i holds slot i+1; slot 0 is 1/1
+        mates = sorted({k for g in config.groups if slot in g for k in g if k != slot})
+        if not mates:
+            return None
+        k = random.choice(mates)
+        anchor = Fraction(1) if k == 0 else scale[k - 1]
+    else:
+        anchor = random.choice([Fraction(1)] + [n for i, n in enumerate(scale) if i != idx])
+    interval = random.choice(SIMPLE_INTERVALS)
+    new_note = anchor * interval if random.random() < 0.5 else anchor / interval
+    new_note = reduce_to_octave(new_note)
+    if is_valid_ratio(new_note, config.ratio_limit):
+        return new_note
+    return None
+
+
+RELATIVE_SHARE = 0.12  # Share of mutations starting with mutate_relative
+
+
 def scale_invert(scale: List[Fraction], limit: int = None) -> List[Fraction]:
     """
     Invert a scale - mirror all intervals around the octave.
@@ -288,11 +321,13 @@ def mutate(scale: List[Fraction], candidates: List[Fraction], config: SearchConf
         start = 3   # Start with stack
     elif r < 0.74:
         start = 4   # Start with mediant
+    elif r < 0.74 + RELATIVE_SHARE:
+        start = 5   # Start with relative placement
     else:
-        start = 5   # Skip to random replacement
+        start = 6   # Skip to random replacement
     
     # Try each operation from starting point onwards
-    for op in range(start, 6):
+    for op in range(start, 7):
         idx = random.choice(mutable_indices)
         
         if op == 0:
@@ -327,6 +362,11 @@ def mutate(scale: List[Fraction], candidates: List[Fraction], config: SearchConf
                 return scale
         
         elif op == 5:
+            # A simple interval from a neighbouring note
+            if try_replace(mutate_relative(scale, idx, config), idx):
+                return scale
+        
+        elif op == 6:
             # Final fallback: random replacement from candidates
             available = [c for c in candidates if c not in scale_set and c not in excluded_set]
             if available:

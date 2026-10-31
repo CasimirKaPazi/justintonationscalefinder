@@ -11,7 +11,7 @@ from scale_search.config import SearchConfig, validate_combine_method
 from scale_search.util import generate_candidate_ratios, sanitize_scale, reduce_to_octave
 from scale_search.metrics import (
     SCALE_METRICS,
-    cached_metric_nd, combined_metric, get_normalization, init_normalization,
+    cached_metric_nd, combined_metric, scale_metric_quality, init_normalization,
     edo_penalty, edo_deviation,
     scale_fingerprint, fingerprint_distance, fingerprint_diversity_score,
 )
@@ -228,18 +228,8 @@ def evaluate_scale(scale: List[Fraction],
             raw_score = metric_fn(scale)
             scale_metric_scores[metric_name] = raw_score
         
-        # Normalize to 0-1
-        min_val, max_val = get_normalization(metric_name)
-        norm_score = (raw_score - min_val) / (max_val - min_val)
-        norm_score = max(0.0, min(1.0, norm_score))
-        
-        # Convert to quality (higher = better)
-        # 'primes' and 'variety' are already positive (more = better)
-        # 'steps', 'balance', 'propriety', 'edo' are penalties (lower = better), so invert
-        if metric_name in ('primes', 'variety'):
-            quality = norm_score  # Already: higher = higher quality
-        else:
-            quality = 1.0 - norm_score  # Invert penalties
+        # Quality 0-1, higher = better (shared with the metric breakdown)
+        quality = scale_metric_quality(metric_name, raw_score)
 
         # Negative weight: reward the opposite. A signed weight in the
         # geometric mean would instead divide by the quality, which pushed

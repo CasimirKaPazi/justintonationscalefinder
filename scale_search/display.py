@@ -6,7 +6,7 @@ from typing import List, Optional, Tuple
 
 from scale_search.util import sanitize_scale, interval_between
 from scale_search.metrics import (
-    combined_metric, get_normalization, quantile_normalize, format_metric_description,
+    combined_metric, quantile_normalize, format_metric_description, scale_metric_quality,
 )
 from scale_search.evolution import evaluate_scale
 
@@ -273,8 +273,7 @@ def metric_breakdown(details: dict, metrics: List[Tuple[str, float]],
     Ptolemaic major scale (0.74) while the search saw it as nearly perfect.
 
     Scale metrics have no candidate population to rank against, so they are
-    shown by their value for the whole scale on a fixed range, as the search
-    also uses them.
+    shown as the search scores them, by scale_metric_quality.
 
     The quality shown is the metric's own, whatever the sign of its weight —
     a negatively weighted metric is one the search was asked to make worse.
@@ -289,10 +288,7 @@ def metric_breakdown(details: dict, metrics: List[Tuple[str, float]],
             rank = quantile_normalize(details['metric_averages'].get(name, 0), name)
         rows.append((name, 1.0 - rank, weight))
     for name, weight in scale_metrics:
-        raw = details['metric_averages'].get(name, 0)
-        lo, hi = get_normalization(name)
-        norm = max(0.0, min(1.0, (raw - lo) / (hi - lo))) if hi > lo else 0.0
-        quality = norm if name in ('primes', 'variety') else 1.0 - norm
+        quality = scale_metric_quality(name, details['metric_averages'].get(name, 0))
         label = f"edo{edo}" if name == 'edo' else name
         rows.append((label, quality, weight))
     return rows

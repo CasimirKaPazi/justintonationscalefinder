@@ -95,6 +95,46 @@ python scale_search.py --metric "wilson:1,barlow:1,propriety:1,variety:0.1,entro
 | `variety` | Interval variety |
 | `edoN` | Proximity to N-EDO (for neji scales), e.g. `edo12` |
 
+#### How propriety behaves
+
+`propriety` measures by how much interval classes overlap: whether some
+k-step interval is larger than some (k+1)-step interval, taken over all modes.
+The overlap is measured in semitones and scored as `1 / (1 + overlap)`, so a
+proper scale scores 1, a scale overlapping by 0.1 semitones 0.91, and by one
+semitone 0.5.
+
+Unlike the other scale metrics, propriety reaches its best value exactly, so it
+acts more like a constraint than a trade-off. Whenever a proper scale can be
+had cheaply, the search makes the scale proper, almost regardless of the
+weight. In tests with `barlow`:
+
+- At 7 notes it changed nothing: the most consonant 7-note scales are proper
+  anyway.
+- At 12 notes, weights 0.01, 0.1 and 1 all gave the same result. Without
+  propriety, the search placed notes a comma apart (10/9 next to 9/8, 16/9
+  next to 9/5) and left the tritone empty. With it, the result was essentially
+  the 5-limit chromatic scale, with 45/32 or 64/45 as the tritone, at almost
+  no cost in consonance (0.9957 → 0.9955).
+- At 17 notes the weight began to matter: 0.01 left a slight overlap, 0.1
+  removed it.
+
+So the scale gets proper by placing notes evenly, often with one more complex
+ratio filling a gap. In grouped search, where the sub-scales cannot all be
+proper at once, propriety costs consonance instead. On the dodecahedron,
+`soft_tenney:1,propriety:0.5,variety:0.3` with `--combine logloss` raised the
+share of proper faces from 6% to 44% and lowered average sub-scale consonance
+from 0.991 to 0.980.
+
+Propriety used to be placed on a fixed range of 0 to 1 semitone of overlap and
+clamped. A random 12-note scale overlaps by about 3 semitones, so nearly every
+improper scale sat at the floor, and a sub-scale reaching one semitone lost
+almost all of its score at once. In the dodecahedron test above, this cut
+sub-scale consonance to 0.953 for a smaller gain in properness (42% of faces),
+because the search sacrificed consonance everywhere to keep sub-scales off the
+floor. With a negative weight, the inverted metric now keeps rewarding more
+overlap where it used to stop at one semitone, so `propriety:-1` packs notes
+together strongly.
+
 ### Weights
 
 Each metric takes a weight, `name:weight`; without one it counts 1. A
@@ -294,6 +334,24 @@ intervals of the whole scale are scored. It is still blended in by
 `--global-weight`. In the output, the metric breakdown reports the whole scale
 with these metrics, while the interval matrix and the sub-scale table use
 `--metric`.
+
+### Sub-scales around the tonic
+
+Sub-scales containing 1/1 usually come out more consonant than the others,
+although on a regular polytope every vertex is equivalent. In tests with
+`--combine logloss`, faces containing 1/1 averaged 0.992 against 0.980 for the
+rest on the icosahedron, 0.966 against 0.937 on the dodecahedron, and 0.873
+against 0.794 on the 24-cell.
+
+This is not caused by the tonic sitting in slot 0: every score is the same
+from whichever note it is measured, so moving the tonic to another vertex only
+relabels the slots. When the sub-scales cannot all be equally good, the most
+consonant region of the scale ends up around 1/1, because there the ratio
+limit leaves the most room: notes close to 1/1 have small numerators and
+denominators. `--combine worst` did not remove the difference either. A
+mutation that places notes a simple interval from their sub-scale neighbours,
+rather than from 1/1, raised grouped results slightly (better in 11 of 15
+test runs, worse in 4), but left the pattern in place.
 
 ### Reading the output
 
@@ -688,7 +746,10 @@ which is what is needed to find them on an instrument tuned to the file:
 
 1. Generate candidate ratios up to complexity limit
 2. Initialize population from seeds + random scales
-3. Evolve using crossover, mutation, and local search
+3. Evolve using crossover, mutation, and local search. Mutations move a note
+   by a simple interval or a comma, combine or stack existing notes, take a
+   mediant, place the note a simple interval from another note (in grouped
+   search, one sharing a sub-scale with it), or pick a random candidate
 4. Apply simulated annealing with adaptive reheating
 5. Maintain diversity via fingerprint-based selection
 6. Polish best solution with hill climbing

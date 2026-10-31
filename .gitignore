@@ -17,3 +17,6 @@ coverage.xml
 # Scala Archive
 scl/
 seeds/
+
+# tests
+tests/

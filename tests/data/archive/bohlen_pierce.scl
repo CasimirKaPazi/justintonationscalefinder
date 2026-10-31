@@ -1,9 +1,0 @@
-! bohlen_pierce.scl
-!
-Bohlen-Pierce, tritave-repeating (skipped unless --include-non-octave)
- 4
-!
- 27/25
- 25/21
- 9/7
- 3/1

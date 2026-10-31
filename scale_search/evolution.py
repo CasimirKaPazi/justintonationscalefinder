@@ -103,7 +103,8 @@ def _instance_counts(octave_range: int) -> Tuple[int, int, int, int, int, int]:
     return up, n * n - up, up, m * n - up, n * (n - 1) // 2, m * (m - 1) // 2
 
 
-def _interval_classes(scale: List[Fraction], octave_range: int) -> List[Tuple[Tuple[int, int], int]]:
+def _interval_classes(scale: List[Fraction], octave_range: int,
+                      mode_invariant: bool = False) -> List[Tuple[Tuple[int, int], float]]:
     """
     Every interval between two notes of the scale laid out over several
     octaves, octave-reduced, as ((n, d), count) pairs.
@@ -120,6 +121,16 @@ def _interval_classes(scale: List[Fraction], octave_range: int) -> List[Tuple[Tu
 
     Notes are expected to lie strictly between 1/1 and 2/1, as everywhere in
     the search; anything else is laid out copy by copy, as before.
+
+    The layout makes the score depend on which note the scale starts from:
+    over 3 octaves, q/p (not crossing the starting note) occurs twice as often
+    as 2p/q (crossing it), and the tonic has a copy more than the other notes.
+    That is intended for a scale with a tonic. A sub-scale has none -- it is
+    transposed to its lowest note only to be measured -- so for it the
+    starting point was an accident of where the parent scale's 1/1 falls,
+    and its six modes could differ by almost 0.01. With mode_invariant, every
+    note is treated alike and each pair counts q/p and 2p/q equally often
+    (n^2/2 times each for n octaves), so every mode scores the same.
     """
     # Integer pairs throughout: comparing Fractions was a noticeable share of
     # the running time once the pair loop had been shortened
@@ -128,6 +139,10 @@ def _interval_classes(scale: List[Fraction], octave_range: int) -> List[Tuple[Tu
         return _interval_classes_by_copies(scale, octave_range)
 
     up, down, t_up, t_down, unisons, t_unisons = _instance_counts(octave_range)
+    if mode_invariant:
+        n = 2 * octave_range + 1
+        up = down = t_up = t_down = n * n / 2
+        t_unisons = unisons
     out = []
     unison_count = t_unisons + unisons * len(nd)
     if unison_count:
@@ -190,7 +205,8 @@ def evaluate_scale(scale: List[Fraction],
                    interval_cache: dict = None,
                    scale_metrics: List[Tuple[str, float]] = None,
                    edo: int = 0,
-                   combine_method: str = 'geometric') -> Tuple[float, dict]:
+                   combine_method: str = 'geometric',
+                   mode_invariant: bool = False) -> Tuple[float, dict]:
     """
     Evaluate a scale's quality using the specified metric(s).
     Returns (fitness, details) where higher fitness = better scale.
@@ -208,6 +224,8 @@ def evaluate_scale(scale: List[Fraction],
             'mean' - arithmetic mean: bad intervals can be averaged out
             'power2', 'power3', etc. - power mean with given exponent
             'logloss' - log loss: heavily penalizes near-dissonant intervals
+        mode_invariant: Score the scale the same whichever note it starts from
+            (used for sub-scales; see _interval_classes)
     
     All metrics are converted to quality scores (0-1, higher = better).
     Final score combines interval quality with scale metrics via weighted geometric mean.
@@ -227,7 +245,7 @@ def evaluate_scale(scale: List[Fraction],
     # Every interval class with the number of times it occurs (see
     # _interval_classes); none at all without interval metrics, which is
     # possible at the whole-scale level of a grouped search
-    classes = _interval_classes(scale, octave_range) if metrics else []
+    classes = _interval_classes(scale, octave_range, mode_invariant) if metrics else []
     for (int_n, int_d), count in classes:
         # Combined score: from the per-search cache if given, else computed
         score = None
@@ -412,9 +430,11 @@ def evaluate_grouped_scale(genome: List[Fraction],
             local_penalties.append(1.0)
             group_details.append({'group': group, 'scale': [], 'quality': 0.0})
             continue
+        # A sub-scale has no tonic of its own, so it is scored the same in
+        # every mode (see _interval_classes)
         _, sub_details = evaluate_scale(
             sub, metrics, octave_range, interval_cache,
-            scale_metrics, edo, combine_method)
+            scale_metrics, edo, combine_method, mode_invariant=True)
         q = sub_details['quality']
         local_penalties.append(1.0 - q)
         group_details.append({

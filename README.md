@@ -325,7 +325,14 @@ well-temperament in JI. The per-key scores show where the compromise falls.
 
 Each sub-scale is transposed to its own tonic before scoring, so a metric means
 the same thing locally as it does globally — a group sitting high in the parent
-scale isn't judged as a fragment. Sub-scale scores are then combined with the
+scale isn't judged as a fragment. A sub-scale has no tonic of its own, so it is
+scored the same whichever of its notes it starts from: every interval and its
+octave complement (5/4 and 8/5) count equally. A whole scale is scored from its
+tonic: over 3 octaves, intervals that don't cross the tonic count twice as
+often as those that do. Sub-scales used to be scored that way too, starting
+from their lowest note above the parent's 1/1, so where the parent's tonic fell
+decided which mode each sub-scale was judged in; the modes of one sub-scale
+could differ by up to 0.046. Sub-scale scores are then combined with the
 same `--combine` method used for intervals, so `logloss` or `worst` prevents one
 unplayable sub-scale from hiding behind good ones.
 
@@ -376,21 +383,31 @@ with these metrics, while the interval matrix and the sub-scale table use
 
 ### Sub-scales around the tonic
 
-Sub-scales containing 1/1 usually come out more consonant than the others,
-although on a regular polytope every vertex is equivalent. In tests with
-`--combine logloss`, faces containing 1/1 averaged 0.992 against 0.980 for the
-rest on the icosahedron, 0.966 against 0.937 on the dodecahedron, and 0.873
-against 0.794 on the 24-cell.
+The sub-scales containing 1/1 tend to come out somewhat more consonant than the
+others, although on a regular polytope every vertex is equivalent. It is a
+tendency, not a rule. On the 24-cell (`24cell:cells`, metric
+`barlow,euler,wilson,soft_tenney`, `--combine logloss`, `--global-metric edo24`,
+`--global-weight 0.1`), six short searches gave the cells containing 1/1 an
+average advantage of 0.010–0.025. Looking at every vertex in turn, though, the
+cells around a vertex differ from the rest by up to ±0.03, and the vertex 1/1
+ranked between 1st and 7th of 24. A single run can therefore show the cells
+around 1/1 below average too. Vertices with simpler ratios tend to have better
+cells around them.
 
-This is not caused by the tonic sitting in slot 0: every score is the same
-from whichever note it is measured, so moving the tonic to another vertex only
-relabels the slots. When the sub-scales cannot all be equally good, the most
-consonant region of the scale ends up around 1/1, because there the ratio
-limit leaves the most room: notes close to 1/1 have small numerators and
-denominators. `--combine worst` did not remove the difference either. A
-mutation that places notes a simple interval from their sub-scale neighbours,
-rather than from 1/1, raised grouped results slightly (better in 11 of 15
-test runs, worse in 4), but left the pattern in place.
+The cause is the ratio limit, which is measured from 1/1. When the sub-scales
+cannot all be equally good, the most consonant region of the scale settles
+where the limit leaves the most room: around 1/1, whose neighbours have small
+numerators and denominators. A higher `--ratio-limit` loosens this.
+
+Neither the slot nor the scoring favours 1/1. Sub-scales are scored the same in
+every mode (see [How grouped scoring works](#how-grouped-scoring-works)), and
+moving the tonic to another vertex would only renumber the slots. Things that
+did not remove the tendency: `--combine worst`; a mutation that places notes a
+simple interval from their sub-scale neighbours rather than from 1/1, which
+improved grouped results slightly (better in 11 of 15 test runs, worse in 4);
+and scoring sub-scales the same in every mode, after which the advantage was
+somewhat larger (0.019 on average in the six runs above, against 0.005 with the
+earlier mode-dependent scoring).
 
 ### Reading the output
 

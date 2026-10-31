@@ -395,14 +395,16 @@ def evaluate_grouped_scale(genome: List[Fraction],
                            global_metrics: List[Tuple[str, float]] = None,
                            global_scale_metrics: List[Tuple[str, float]] = None,
                            global_edo: int = None,
-                           global_interval_cache: dict = None) -> Tuple[float, dict]:
+                           global_interval_cache: dict = None,
+                           group_combine: str = None) -> Tuple[float, dict]:
     """
     Evaluate a slot-order genome by the quality of its sub-scales.
     
     Each group is transposed to its own tonic and scored with the ordinary
     metrics, so every metric means locally what it means globally. Sub-scale
-    scores are combined with the same combine_method used for intervals, so
-    'logloss' or 'worst' stops one unplayable sub-scale hiding behind good ones.
+    scores are combined with group_combine, by default the same combine_method
+    used for intervals, so 'logloss' or 'worst' stops one unplayable sub-scale
+    hiding behind good ones.
     
     global_weight blends in the quality of the whole scale taken together:
         final = local^(1 - w) * global^w
@@ -444,7 +446,7 @@ def evaluate_grouped_scale(genome: List[Fraction],
             'quality': q,
         })
     
-    local_penalty = combine_penalties(local_penalties, combine_method)
+    local_penalty = combine_penalties(local_penalties, group_combine or combine_method)
     local_quality = max(0.001, 1.0 - local_penalty)
     
     # Whole-scale quality, for the global blend and for reporting
@@ -740,6 +742,7 @@ def evolve(config: SearchConfig, verbose: bool = True,
         global_scale_metrics=config.global_scale_metrics,
         global_edo=config.global_edo,
         global_interval_cache={} if separate_global else None,
+        group_combine=config.group_combine,
     )
     
     if grouped:

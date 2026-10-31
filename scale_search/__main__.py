@@ -75,9 +75,9 @@ A 7-note scale has 6 ratios plus the implicit 1/1 tonic.
 
 COMBINE_DESCRIPTIONS = {
     'geometric': 'geometric mean',
-    'worst': 'worst interval',
+    'worst': 'worst {}',
     'mean': 'arithmetic mean',
-    'logloss': 'log loss (heavily penalizes bad intervals)',
+    'logloss': 'log loss (heavily penalizes bad {}s)',
 }
 
 
@@ -152,7 +152,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--combine", type=str, default='geometric',
                         help="How to combine interval scores: geometric (default), "
                              "worst, mean, power2, power3, logloss. Also used to combine "
-                             "sub-scale scores with --groups.")
+                             "sub-scale scores with --groups, unless --group-combine "
+                             "is given.")
     parser.add_argument("--random-seed", type=int, default=None, metavar="N",
                         help="Random seed for reproducible results")
     parser.add_argument("--quiet", action="store_true",
@@ -175,6 +176,11 @@ def _build_parser() -> argparse.ArgumentParser:
                              "format as --metric, while --metric then applies to the "
                              "sub-scales only. May consist of scale metrics alone, e.g. "
                              "'edo24:2,steps:1'. Default: the whole scale uses --metric too.")
+    parser.add_argument("--group-combine", type=str, default=None, metavar="METHOD",
+                        help="With --groups: how to combine the sub-scale scores, "
+                             "with the same choices as --combine (default: the "
+                             "--combine method). E.g. --combine geometric "
+                             "--group-combine worst.")
     parser.add_argument("--global-weight", type=float, default=0.3, metavar="W",
                         help="With --groups: blend sub-scale quality with whole-scale "
                              "quality as local^(1-W) * global^W (default: 0.3). "
@@ -265,8 +271,12 @@ def _validate_args(args):
 
     try:
         validate_combine_method(args.combine)
+        if args.group_combine is not None:
+            validate_combine_method(args.group_combine)
     except ValueError as e:
         _fail(str(e))
+    if args.group_combine is not None and not args.groups:
+        _fail("--group-combine only applies with --groups")
 
 
 def _parse_constraints(args):
@@ -278,6 +288,14 @@ def _parse_constraints(args):
                 normalize_notes(excluded, '--exclude'))
     except ValueError as e:
         _fail(str(e))
+
+
+def _combine_desc(method, member='interval'):
+    """Human-readable name of a combine method; member is what it combines."""
+    if method.startswith('power'):
+        p = int(method[5:]) if len(method) > 5 else 2
+        return f'power mean (p={p})'
+    return COMBINE_DESCRIPTIONS.get(method, method).format(member)
 
 
 def _describe_metrics(metrics, scale_metrics, edo):
@@ -414,6 +432,7 @@ def main(argv=None):
             global_metrics=global_metrics,
             global_scale_metrics=global_scale_metrics,
             global_edo=global_edo,
+            group_combine=args.group_combine,
         )
     except ValueError as e:
         _fail(str(e))
@@ -446,11 +465,7 @@ def main(argv=None):
     note_desc = f"exactly {config.fixed_notes}" if config.fixed_notes is not None else f"{config.min_notes}-{config.max_notes}"
     octave_desc = f"{2 * config.octave_range + 1} octaves" if config.octave_range > 0 else "1 octave"
 
-    if config.combine_method.startswith('power'):
-        p = int(config.combine_method[5:]) if len(config.combine_method) > 5 else 2
-        combine_desc_str = f'power mean (p={p})'
-    else:
-        combine_desc_str = COMBINE_DESCRIPTIONS.get(config.combine_method, config.combine_method)
+    combine_desc_str = _combine_desc(config.combine_method)
 
     if verbose:
         print("=" * 60)
@@ -472,6 +487,8 @@ def main(argv=None):
         else:
             print(f"Metric: {metric_desc}")
         print(f"Interval combination: {combine_desc_str}")
+        if structure:
+            print(f"Sub-scale combination: {_combine_desc(config.group_combine or config.combine_method, 'sub-scale')}")
         print(f"Generations: {config.generations}")
         if args.runs > 1:
             print(f"Runs: {args.runs} (cross-seeding)")

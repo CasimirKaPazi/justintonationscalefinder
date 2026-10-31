@@ -128,6 +128,9 @@ class SearchConfig:
     global_metrics: Optional[List[Tuple[str, float]]] = None
     global_scale_metrics: Optional[List[Tuple[str, float]]] = None
     global_edo: int = 0
+    # How sub-scale scores are combined into the local quality. None means
+    # the same method as for intervals (combine_method).
+    group_combine: Optional[str] = None
 
     def __post_init__(self):
         if self.metrics is None:
@@ -166,6 +169,10 @@ class SearchConfig:
                     f"global_weight must be between 0 and 1, got {self.global_weight}")
         elif self.global_metrics is not None or self.global_scale_metrics is not None:
             raise ValueError("global metrics only apply to grouped search (--groups)")
+        elif self.group_combine is not None:
+            raise ValueError("group_combine only applies to grouped search (--groups)")
+        if self.group_combine is not None:
+            self.group_combine = validate_combine_method(self.group_combine)
 
         self.combine_method = validate_combine_method(self.combine_method)
 

@@ -190,7 +190,10 @@ Reading the table:
   5-limit down to the floor, so `primes:-1` pushes hard towards 5-limit.
 
 The numbers depend on the interval metric, the note count and the other
-settings, so treat them as orders of magnitude.
+settings, so treat them as orders of magnitude. The ratio limit matters most:
+the table is for the default of 64, and at higher limits interval quality
+differs less between scales, so the same weight on a scale metric counts for
+more (see [Quality and the ratio limit](#quality-and-the-ratio-limit)).
 
 ## Interval Combination Methods
 
@@ -341,6 +344,11 @@ decided which mode each sub-scale was judged in; the modes of one sub-scale
 could differ by up to 0.046. Sub-scale scores are then combined with the
 same `--combine` method used for intervals, so `logloss` or `worst` prevents one
 unplayable sub-scale from hiding behind good ones.
+
+`--group-combine METHOD` combines the sub-scales differently from the
+intervals, with the same choices as `--combine`. For example,
+`--combine geometric --group-combine worst` lets each sub-scale average over
+its intervals while the weakest sub-scale decides the local quality.
 
 `--global-weight W` (default 0.3) blends sub-scale quality with whole-scale
 quality:
@@ -770,7 +778,8 @@ reproduced its quality exactly.
 The tool outputs:
 
 - The best scale found (ratios)
-- Quality score (0-1, higher = better)
+- Quality score (0-1, higher = better; comparable only between runs with the
+  same `--ratio-limit`, see below)
 - Interval matrix showing pairwise consonance
 - Metric breakdown when using multiple metrics: for interval metrics, how each interval
   ranks among all candidate ratios, averaged over every interval scored (the same
@@ -785,6 +794,25 @@ analysis with `--analyze`. `--compare --json` gives the ranking.
 
 Invalid options are reported before the search starts, on stderr, with exit
 code 2.
+
+### Quality and the ratio limit
+
+Each interval is ranked among the candidate ratios under `--ratio-limit`, so a
+quality score depends on the limit. With Barlow:
+
+| Ratio limit | Ptolemy's intense diatonic | 8/7, 7/6, 4/3, 3/2, 14/9, 7/4 | Difference |
+|---|---|---|---|
+| 16 | 0.9807 | 0.9622 | 0.0185 |
+| 32 | 0.9935 | 0.9861 | 0.0074 |
+| 64 | 0.9978 | 0.9951 | 0.0027 |
+| 128 | 0.9992 | 0.9982 | 0.0010 |
+
+The same scale scores higher at a higher limit: the added candidates are
+mostly more complex ratios, so its intervals rank higher among them. Here the
+order of the two scales stays the same, but the difference between them
+shrinks. Compare quality scores only between runs with the same
+limit. At a higher limit, scale metrics also carry more weight relative to
+consonance than the [weight table](#what-a-weight-costs) shows.
 
 ### Saving the result for other programs
 

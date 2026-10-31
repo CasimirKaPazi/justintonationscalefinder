@@ -91,7 +91,7 @@ python scale_search.py --metric "wilson:1,barlow:1,propriety:1,variety:0.1,entro
 | `steps` | Penalizes clustered notes |
 | `balance` | Step size evenness (coefficient of variation) |
 | `propriety` | Rothenberg propriety (interval class overlap, all modes) |
-| `primes` | Rewards prime diversity (better use variety) |
+| `primes` | Rewards using primes above 5 (7, 11, 13, ...), lower ones more |
 | `variety` | Interval variety |
 | `edoN` | Proximity to N-EDO (for neji scales), e.g. `edo12` |
 
@@ -160,7 +160,7 @@ average of 4 searches at 120 generations and population 150).
 | `steps` | 0 / 0.0003 | 0 / 0.0010 | 0 / 0.0016 | 0 / 0.0015 |
 | `balance` | 0 / 0.0006 | 0.0065 / 0.0010 | 0.0064 / 0.0063 | 0.0153 / 0.0194 |
 | `variety` | 0 / 0 | 0.0017 / 0.0015 | 0.0032 / 0.0020 | 0.0052 / 0.0054 |
-| `primes` | 0.0041 / 0.0052 | 0.0208 / 0.0157 | 0.0381 / 0.0171 | 0.0411 / 0.0165 |
+| `primes` | 0 / 0 | 0.0025 / 0.0029 | 0.0076 / 0.0073 | 0.0152 / 0.0177 |
 | `edo12` | 0.0005 / 0.0001 | 0.0005 / 0.0020 | 0.0005 / 0.0091 | 0.0049 / 0.0150 |
 | `propriety` | 0 / 0.0002 | 0 / 0.0002 | 0 / 0.0002 | 0 / 0.0002 |
 
@@ -179,9 +179,15 @@ Reading the table:
   three to four times as much as `variety` at the same weight.
 - `edo12` costs little at 7 notes, where 5-limit scales lie close to 12-EDO
   anyway, and much more at 12 notes.
-- `primes` is expensive at every weight. A 5-limit scale scores 0 on it, the
-  lowest possible value, so even a small weight pushes strongly towards
-  higher primes. Use weights around 0.01, or `variety` instead.
+- `primes` grows steadily too, at about the cost of `balance`. At 7 notes,
+  weight 0.1 brought in about two primes above 5, 0.3 about four, 1 about
+  five, and 3 all primes up to 29. It used to score a 5-limit scale 0, the
+  lowest possible value, which made even weight 0.01 cost more than `steps`
+  at weight 1 and made 0.1 already collect every prime up to 29. It now
+  scores 5-limit 0.9, rising with the sum of 1/p over the primes above 5 used:
+  7-limit 0.93, 7 and 11 0.95, 7 to 19 0.98, 7 to 29 1. With a negative
+  weight, which prefers fewer primes, the inverted score runs from 0.1 for
+  5-limit down to the floor, so `primes:-1` pushes hard towards 5-limit.
 
 The numbers depend on the interval metric, the note count and the other
 settings, so treat them as orders of magnitude.

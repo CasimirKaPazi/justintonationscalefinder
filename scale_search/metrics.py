@@ -666,7 +666,8 @@ def scale_metric_quality(metric_name: str, raw: float) -> float:
     A scale metric's raw value as a quality, 0-1, higher = better, before
     any inversion for a negative weight.
 
-    Most scale metrics are placed on a fixed range and clamped. Propriety is
+    Most scale metrics are placed on a fixed range and clamped. Primes is
+    placed on 0.9-1 only (see below). Propriety is
     mapped smoothly instead, as 1 / (1 + overlap in semitones), because on a
     range it behaved like a cliff: a random 12-note scale overlaps by about 3
     semitones, so nearly all improper scales were clamped to the floor, and a
@@ -682,6 +683,16 @@ def scale_metric_quality(metric_name: str, raw: float) -> float:
         return 1.0 / (1.0 + max(0.0, raw))
     lo, hi = get_normalization(metric_name)
     norm = max(0.0, min(1.0, (raw - lo) / (hi - lo))) if hi > lo else 0.0
+    if metric_name == 'primes':
+        # A 5-limit scale scores 0.9, rising with sum(1/p) to 1: 7-limit
+        # 0.929, 7 and 11 0.947, 7 to 19 0.984, 7 to 29 1. On the full 0-1
+        # range a 5-limit scale scored 0, hit the floor, and the first prime
+        # above 5 was worth so much that primes:0.01 already cost more
+        # consonance than steps:1, and from 0.1 the search collected every
+        # prime up to 29. On this range the weight is graded (7 notes, with
+        # barlow: 0.1 adds about two primes, 0.3 about four, 3 all of them),
+        # with costs per weight similar to balance.
+        return 0.9 + 0.1 * norm
     # 'primes' and 'variety' are already positive (more = better); the
     # others are penalties (lower = better), so invert
     return norm if metric_name in ('primes', 'variety') else 1.0 - norm

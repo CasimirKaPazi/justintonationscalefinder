@@ -1,0 +1,33 @@
+{
+ "cents": [
+  386.3,
+  498.0,
+  702.0,
+  884.4,
+  1200.0
+ ],
+ "metrics": {
+  "entropy": {
+   "quality": 0.6907,
+   "weight": 0.5
+  },
+  "steps": {
+   "quality": 1.0,
+   "weight": 1.0
+  },
+  "tenney": {
+   "quality": 0.9884,
+   "weight": 1.0
+  }
+ },
+ "num_intervals": 120,
+ "octave_range": 1,
+ "quality": 0.986221,
+ "scale": [
+  "5/4",
+  "4/3",
+  "3/2",
+  "5/3",
+  "2/1"
+ ]
+}

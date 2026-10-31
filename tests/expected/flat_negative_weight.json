@@ -1,0 +1,31 @@
+{
+ "cents": [
+  498.0,
+  702.0,
+  813.7,
+  884.4,
+  996.1,
+  1200.0
+ ],
+ "metrics": {
+  "barlow": {
+   "quality": 0.9898,
+   "weight": 1.0
+  },
+  "propriety": {
+   "quality": 0.0,
+   "weight": -0.5
+  }
+ },
+ "num_intervals": 171,
+ "octave_range": 1,
+ "quality": 0.998409,
+ "scale": [
+  "4/3",
+  "3/2",
+  "8/5",
+  "5/3",
+  "16/9",
+  "2/1"
+ ]
+}

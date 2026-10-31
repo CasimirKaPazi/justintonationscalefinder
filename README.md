@@ -481,11 +481,11 @@ python scale_search.py --notes 7 --metric "barlow:1,propriety:1" \
 ```
 
 ```
-Loaded 4500 scales from ~/scala/scl; 1690 usable as seeds, keeping best 150.
-  Skipped: 2313 outside 5-9 notes, 494 outside ratio limit 32
-  Best seed: <file>.scl (quality 0.9792)
+Loaded 4500 scales from ~/scala/scl; 1792 usable as seeds, keeping best 150.
+  Skipped: 2313 outside 5-9 notes, 392 outside ratio limit 32
+  Best seed: <file>.scl (quality 0.9748)
 ...
-Seeded 150 of 746 seed-derived scales (best first); the other 150 start random.
+Seeded 150 of 736 seed-derived scales (best first); the other 150 start random.
 ```
 
 (The counts are from a run on a 4500-file test archive; they depend on the
@@ -511,8 +511,8 @@ selects rather than loads, in three steps:
    rather than the closest: the nearest ratio to a 400-cent third under a limit
    of 32 is 29/23, which is a worse seed than 5/4 despite being 13 cents nearer.
    A cents-written 12-EDO file snaps to `15/14, 9/8, 6/5, 5/4, 4/3, 7/5, 3/2,
-   8/5, 5/3, 9/5, 15/8`. Scales already written in ratios inside the limit pass
-   through unchanged.
+   8/5, 5/3, 9/5, 15/8`. Pitches already written as ratios inside the limit
+   are kept as written, so a rational scale passes through unchanged.
 3. **Scoring.** What survives is evaluated and the best kept, since a seed only
    earns a population slot if it beats random initialisation.
 
@@ -666,6 +666,24 @@ analysis with `--analyze`. `--compare --json` gives the ranking.
 Invalid options are reported before the search starts, on stderr, with exit
 code 2.
 
+### Saving the result for other programs
+
+`--output-scl FILE` writes the best scale as a Scala `.scl` file, in pitch
+order, for Scale Workshop, Scala, synthesizers and tuning apps. The
+description line gives the date, note count or group structure and quality,
+and a comment line the full command. An existing file is overwritten.
+
+With `--groups` the file also lists the sub-scales as scale degrees, counted
+in the file's own order (0 = 1/1, 1 = the lowest note above it, and so on),
+which is what is needed to find them on an instrument tuned to the file:
+
+```
+! Sub-scales as scale degrees (0 = 1/1):
+!   1: 0 3 5 7
+!   2: 0 1 3 6
+...
+```
+
 ## Algorithm
 
 1. Generate candidate ratios up to complexity limit
@@ -690,6 +708,29 @@ code 2.
 - You can use `--compare` in conjunction with `--notes` or `--include` to only compare scales that have the specified note count or notes.
 - With `--groups` that have higher note count, use a strict `--combine` (`logloss` or `worst`). Sub-scale scores are combined the same way as intervals, so with `mean` one unplayable sub-scale disappears into the average.
 - `propriety` tends to game the system. Use carefully.
+
+## Testing
+
+```bash
+python tests/run_tests.py
+```
+
+runs a set of short searches and comparisons with a fixed random seed and
+compares their results with stored copies in `tests/expected/`, checks that
+invalid options are rejected with a message, and checks that files written by
+`--save-result`, `--export-seeds` and `--output-scl` read back to the same
+scales. It takes under a minute and uses small test files in `tests/data/`.
+
+A changed result is not necessarily a bug: a change to the algorithm or a
+metric is expected to change results. Once the new results are understood to
+be right, `python tests/run_tests.py --update` stores them as the new expected
+results. Words after the command run only the tests whose names contain them,
+e.g. `python tests/run_tests.py group`.
+
+The stored results were produced with Python 3.13. Another Python version may
+give different but equally valid results from the same random seed; then run
+`--update` once on a version of the code known to be good, and compare later
+changes against that.
 
 ## License
 

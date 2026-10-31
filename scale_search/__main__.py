@@ -140,6 +140,11 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Append the best scale found to FILE in seed-file format, "
                              "with the quality and command line as comments, so it can "
                              "be used with --seeds or --compare later")
+    parser.add_argument("--output-scl", type=str, default=None, metavar="FILE",
+                        help="Write the best scale found to FILE as a Scala .scl file "
+                             "(for Scale Workshop, Scala, synths and tuning apps). With "
+                             "--groups, the sub-scales are listed as scale degrees in "
+                             "comment lines. An existing FILE is overwritten.")
     parser.add_argument("--include", type=str, default=None,
                         help="Required notes (comma-separated ratios, e.g., '3/2,5/4')")
     parser.add_argument("--exclude", type=str, default=None,
@@ -234,6 +239,12 @@ def _validate_args(args):
         if path and not os.path.exists(path):
             _fail(f"{flag}: '{path}' not found")
 
+    if args.compare is not False:
+        for flag, value in (("--save-result", args.save_result),
+                            ("--output-scl", args.output_scl)):
+            if value:
+                _fail(f"--compare does not search, so there is no result for {flag}")
+
     if args.top is not None:
         if args.export_seeds is None:
             _fail("--top only applies with --export-seeds")
@@ -244,9 +255,11 @@ def _validate_args(args):
             _fail("--export-seeds needs at least one --seeds source to read from")
         if args.compare is not False:
             _fail("--export-seeds and --compare cannot be combined")
-        if args.save_result:
-            _fail("--export-seeds does not search, so there is no result to "
-                  "--save-result")
+        for flag, value in (("--save-result", args.save_result),
+                            ("--output-scl", args.output_scl)):
+            if value:
+                _fail(f"--export-seeds does not search, so there is no result "
+                      f"for {flag}")
         if os.path.abspath(args.export_seeds) in {os.path.abspath(p) for p in args.seeds}:
             _fail("--export-seeds would overwrite one of its own --seeds sources")
 
@@ -493,9 +506,11 @@ def main(argv=None):
     scale, fitness, details = best_overall
     analysis = _analysis_data(scale, args) if args.analyze else None
 
+    command = argv if argv is not None else sys.argv[1:]
     if args.save_result:
-        _save_result(args.save_result, scale, details, structure,
-                     argv if argv is not None else sys.argv[1:], verbose)
+        _save_result(args.save_result, scale, details, structure, command, verbose)
+    if args.output_scl:
+        _write_scl(args.output_scl, scale, details, structure, command, verbose)
 
     # In grouped mode `details` describe the whole scale, so the breakdown
     # reports the metrics the whole scale was scored with
@@ -1051,6 +1066,43 @@ def _save_result(path, scale, details, structure, argv, verbose):
         return
     if verbose:
         print(f"Result appended to {path}")
+
+
+def _write_scl(path, scale, details, structure, argv, verbose):
+    """
+    --output-scl: the result as a Scala file, notes in pitch order.
+
+    A .scl file has no notion of slots, so with --groups the sub-scales are
+    given as scale degrees (0 = 1/1, 1 = the lowest note above it, ...) in
+    comment lines, which is what is needed to find them on an instrument
+    tuned to the file.
+    """
+    pitches = sorted(scale)
+    what = structure.name if structure else f"{len(pitches) + 1} notes"
+    description = (f"scale_search result {date.today().isoformat()}, {what}, "
+                   f"quality {details['quality']:.4f}")
+    lines = [f"! {os.path.basename(path)}", "!", description,
+             f" {len(pitches) + 1}", "!",
+             f"! Command: scale_search {shlex.join(argv)}"]
+    if structure and details.get('groups'):
+        degree = {p: i for i, p in enumerate([Fraction(1)] + pitches)}
+        full_slots = slots_to_pitches(scale)
+        lines.append("! Sub-scales as scale degrees (0 = 1/1):")
+        width = len(str(len(details['groups'])))
+        for n, g in enumerate(details['groups'], 1):
+            degrees = sorted(degree[full_slots[k]] for k in g['group'])
+            lines.append(f"!   {n:>{width}}: {' '.join(str(d) for d in degrees)}")
+        lines.append("!")
+    for r in pitches + [Fraction(2)]:
+        lines.append(f" {r.numerator}/{r.denominator}")
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write("\n".join(lines) + "\n")
+    except OSError as e:
+        print(f"Warning: could not write '{path}': {e}", file=sys.stderr)
+        return
+    if verbose:
+        print(f"Scala file written to {path}")
 
 
 def _load_libraries(paths, args):

@@ -184,7 +184,13 @@ def snap_to_candidates(scale: List[Fraction], candidates: List[Fraction],
         near = [(abs(candidate_cents[j] - c), j) for j in range(lo, hi)]
         within = [(candidates[j].numerator * candidates[j].denominator, d, j)
                   for d, j in near if d <= tolerance]
-        if within:
+        exact = [j for d, j in near if d < 1e-6 and candidates[j] == r]
+        if exact:
+            # Already expressible: kept as written. Preferring the simplest
+            # ratio is for pitches given in cents; applied to exact ratios it
+            # replaced Ptolemy's 15/8 with 13/7 (16.6 cents away, simpler).
+            best = r
+        elif within:
             best = candidates[min(within)[2]]      # Simplest inside tolerance
         else:
             best = candidates[min(near)[1]]        # Otherwise the closest
